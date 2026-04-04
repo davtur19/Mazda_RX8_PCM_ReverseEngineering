@@ -1,0 +1,679 @@
+================================================================================
+MAZDA RX-8 S1 PCM FIRMWARE - UDS FLASH REPROGRAMMING ANALYSIS
+Renesas SH7055 Reverse Engineering - 60E1D400.bin
+================================================================================
+
+FIRMWARE FILE: Stock_ROMs/60E1D400.bin (512KB)
+ARCHITECTURE: Renesas SH7055 (SH-2A, big-endian, 16-bit fixed-width instructions with delay slots)
+BASE ADDRESS: 0x00000000
+ANALYZED: April 2026
+
+================================================================================
+1. OVERVIEW - UDS FLASH REPROGRAMMING FLOW
+================================================================================
+
+The Mazda RX-8 S1 PCM implements UDS (Unified Diagnostic Services, ISO 14229-1)
+flash reprogramming via a three-stage sequence:
+
+  STAGE 1: RequestDownload (SID 0x34)
+    - Unlocks flash write capability
+    - Validates target memory address range
+    - Returns max block length for data transfer
+    - Response: 0x74 + 0x01 (1 byte length follows) + block_length
+
+  STAGE 2: TransferData (SID 0x36)
+    - Receives firmware blocks sequentially
+    - Validates block counter increment
+    - Writes data to flash as blocks arrive
+    - Response: 0x76 + block_counter
+
+  STAGE 3: RequestTransferExit (SID 0x37)
+    - Finalizes transfer
+    - Triggers flash commit
+    - Performs verification/checksumming
+    - Response: 0x77
+
+SECURITY PREREQUISITE:
+  - SecurityAccess (SID 0x27) must succeed first
+  - Fixed key: [0x4D, 0xAC, 0xCD]
+  - Subfunction 0x01 = request seed, 0x02 = send key
+
+================================================================================
+2. HANDLER ADDRESSES AND FUNCTION LOCATIONS
+================================================================================
+
+SID 0x34 - RequestDownload:       0x1A70 (diag_request_download_sid34)
+SID 0x36 - TransferData:          0x1B8C (diag_transfer_data_sid36)
+SID 0x37 - RequestTransferExit:   0x1CB8 (diag_transfer_exit_sid37)
+SID 0x27 - SecurityAccess:        0x17D8 (diag_security_access_sid27)
+
+Helper functions:
+  serial_build_and_send_frame:    0x1216 (sends response frames)
+  set_sp_and_jump:                0x1094 (enters RAM-based flash code)
+  data_transfer_setup:            0x0806 (prepares transfer buffers)
+  calculate_checksum:             0x011A (checksum validation)
+
+================================================================================
+3. RAM STATE VARIABLES (SCRATCHPAD RAM 0xFFFFDF00+)
+================================================================================
+
+The firmware uses dedicated RAM locations as a "control block" for flash ops:
+
+ADDRESS        SIZE   NAME/PURPOSE
+-------        ----   ----
+0xFFFFDFB0     1B     security_level (0=locked, nonzero=unlocked)
+0xFFFFDFB1     1B     session_mode (0=inactive, 1=active)
+0xFFFFDFB2     1B     security_required_flag
+0xFFFFDFB3     1B     download_session_active (0=inactive, 1=active)
+0xFFFFDFB4     1B     block_sequence_counter (incremented per block)
+0xFFFFDFB5     1B     transfer_error_flag
+0xFFFFDFB8     4B     flash_write_address_pointer (RAM address of code)
+0xFFFFDFBC     4B     remaining_bytes_to_transfer (decremented per block)
+0xFFFFDFC0     4B     current_write_destination (flash address)
+0xFFFFDFC4     1B     block_complete_flag (0=processing, 1=done)
+0xFFFFDFC5     1B     byte_counter_in_block (0-255)
+0xFFFFDFC6    10B     TX_RESPONSE_BUFFER (UDS response frame)
+
+LAYOUT:
+  0xFFFFDFC6+0: RESPONSE_ID (0x7F=neg, 0x74/76/77=pos)
+  0xFFFFDFC6+1: RESERVED/ECHO
+  0xFFFFDFC6+2: RESPONSE_LENGTH (2 bytes)
+  0xFFFFDFC6+4: SERVICE_ID (0x34/0x36/0x37)
+  0xFFFFDFC6+5: SUBFUNCTION/STATUS
+  0xFFFFDFC6+6-9: DATA (up to 4 bytes)
+
+================================================================================
+4. SID 0x34 - REQUESTDOWNLOAD - DETAILED ANALYSIS
+================================================================================
+
+FUNCTION: diag_request_download_sid34 @ 0x1A70
+SIZE: 0xE6 bytes (115 instructions)
+
+PURPOSE:
+  Validates requestor is security-unlocked, parses request parameters,
+  validates flash address range, initializes block transfer state.
+
+REQUEST FORMAT:
+  Byte 0:    Service ID (0x34)
+  Byte 1:    Reserved (format/compression identifier - checked but not used)
+  Byte 2-3:  Requested block length (big-endian 16-bit)
+  Byte 4:    Address length format (0x81 or 0x85)
+  Byte 5+:   Start address (big-endian, 1 or 4 bytes based on format)
+  Byte N+:   Size (1 or 4 bytes)
+
+VALIDATION CHECKS PERFORMED:
+  1. Security unlock check (0xFFFFDFB0 must be nonzero)
+     FAIL -> Response: 0x7F 0x34 0x33 (SecurityAccessDenied)
+
+  2. Session active check (0xFFFFDFB1 must be nonzero)
+     FAIL -> Response: 0x7F 0x34 0x22 (ConditionsNotCorrect)
+
+  3. Requested length check (must be 0x0008)
+     FAIL -> Response: 0x7F 0x34 0x12 (SubfunctionNotSupported)
+
+  4. Download session not already active (0xFFFFDFB3 must be 0)
+     FAIL -> Response: 0x7F 0x34 0x10 (GeneralReject)
+
+  5. Address range validation
+     - Parses address and size from request
+     - Uses ATU channel to calculate bounds check
+     - Address must be within flash area (0xFFFF6000-0xFFFF7FFF typical)
+     FAIL -> Response: 0x7F 0x34 0x31 (AddressOutOfRange)
+
+  6. Size alignment check (size & 0x3FF must be nonzero)
+     FAIL -> Response: 0x7F 0x34 0x31
+
+ASSEMBLY PSEUDOCODE (0x1A70-0x1B54):
+
+  // Check security level
+  if (FFFFDFB0 == 0) {
+      response[0] = 0x7F;
+      response[1] = 0x34;
+      response[2] = 0x33;  // SecurityAccessDenied
+      send_response(3);
+      return;
+  }
+
+  // Check session state
+  if (FFFFDFB1 == 0) {
+      response[0] = 0x7F;
+      response[1] = 0x34;
+      response[2] = 0x22;  // ConditionsNotCorrect
+      send_response(3);
+      return;
+  }
+
+  // Check request data length (must be 0x0008)
+  if (request.length != 0x0008) {
+      response[0] = 0x7F;
+      response[1] = 0x34;
+      response[2] = 0x12;  // SubfunctionNotSupported
+      send_response(3);
+      return;
+  }
+
+  // Check download session not already active
+  if (FFFFDFB3 != 0) {
+      response[0] = 0x7F;
+      response[1] = 0x34;
+      response[2] = 0x10;  // GeneralReject
+      send_response(3);
+      return;
+  }
+
+  // Parse address from request[4-7]
+  start_addr = atu_write_compare_value(request[4:8]);  // 0x1AD2
+  flash_addr = start_addr + 0xFFFF6000;  // Relocate to flash area
+
+  // Parse size from request[9:12]
+  size = atu_read_capture_value(request[9:13]);  // 0x1AE0
+  flash_size = size + 0xFFF82000;  // Relocate to flash area
+
+  // Store in RAM control block
+  FFFFDFB8 = start_addr;  // Write pointer
+  FFFFDFBC = size;        // Remaining bytes
+
+  // Validate address range
+  if (flash_addr < 0) {
+      response[0] = 0x7F;
+      response[1] = 0x34;
+      response[2] = 0x31;  // AddressOutOfRange
+      send_response(3);
+      return;
+  }
+
+  end_addr = flash_addr + size - 1;
+  if (end_addr > 0xFFFF7FFF) {  // Above max flash
+      response[0] = 0x7F;
+      response[1] = 0x34;
+      response[2] = 0x31;
+      send_response(3);
+      return;
+  }
+
+  size_aligned = size & 0x3FF;
+  if (size_aligned == 0) {
+      response[0] = 0x7F;
+      response[1] = 0x34;
+      response[2] = 0x31;
+      send_response(3);
+      return;
+  }
+
+  // SUCCESS - Initialize transfer state
+  FFFFDFB3 = 0;    // Download session inactive initially
+  FFFFDFB4 = 1;    // Block counter = 1
+  FFFFDFB0 = 0;    // Clear unlock flag after prep
+
+  // Response: 0x74 + length + 0x01 (1 byte max block length) + 0x0400
+  response[0] = 0x74;
+  response[1] = 0x34;
+  response[2-3] = 0x0004;  // Length = 4 bytes
+  response[4] = 0x01;      // 1 byte (max block length descriptor)
+  response[5] = 0x04;      // Max block = 0x0400 (1024 bytes)
+  response[6-7] = 0x0000;  // Padding
+
+  send_response(8);
+
+CRITICAL OBSERVATIONS:
+  1. Block sequence counter starts at 0x01
+  2. Download session flag cleared (actual session starts on first transfer)
+  3. Address/size encoding uses ATU timer channel helpers
+  4. Flash area restricted: 0xFFFF6000 - 0xFFFF7FFF (8KB max)
+  5. Block size fixed at 0x0400 (1024 bytes per block)
+
+================================================================================
+5. SID 0x36 - TRANSFERDATA - DETAILED ANALYSIS
+================================================================================
+
+FUNCTION: diag_transfer_data_sid36 @ 0x1B8C
+SIZE: 0x100 bytes (128 instructions)
+
+PURPOSE:
+  Receives individual data block from requestor, validates sequence counter,
+  writes block to flash address, updates transfer state counters.
+
+REQUEST FORMAT:
+  Byte 0:    Service ID (0x36)
+  Byte 1:    Block counter (0x01, 0x02, 0x03... must increment)
+  Byte 2-3:  Block length (big-endian 16-bit)
+  Byte 4+:   Data payload (1-1024 bytes)
+
+VALIDATION AND PROCESSING:
+
+  1. Security and session state checks
+     if (FFFFDFB0 == 0) return error 0x22 (ConditionsNotCorrect)
+     if (FFFFDFB4 == 0) return error 0x22
+
+  2. Block size validation (must be exactly 0x0400 = 1024)
+     if (request.block_length != 0x0400) {
+         FFFFDFB4 = 0;  // Clear counter
+         response_code = 0x72;
+         return;
+     }
+
+  3. Block counter validation (must match current counter)
+     if (request.block_counter != expected_counter) {
+         FFFFDFB4 = 0;
+         response_code = 0x72;
+         return;
+     }
+
+  4. Data transfer loop (write bytes to flash)
+     for (i = 0; i < 1024; i++) {
+         // Write byte at FFFFDFC0 (flash address)
+         *FFFFDFC0 = request[4+i];
+
+         // Checksum calculation loop
+         byte_to_write = request[4+i];
+         stored_checksum = lookup_table[1FBC][byte_to_write];
+
+         if (stored_checksum == byte_to_write) {
+             FFFFDFC5++;  // Increment byte counter
+         } else {
+             FFFFDFC5 = 1;  // Reset on mismatch
+         }
+
+         if (FFFFDFC5 == 8) {
+             FFFFDFB4 = 1;  // Set completion flag
+         }
+
+         // Update write address
+         FFFFDFC0++;  // Advance to next byte
+     }
+
+     // Decrement remaining size
+     FFFFDFBC -= 1024;
+
+     // Check if transfer complete
+     if (FFFFDFB4 != 1) {
+         // More blocks expected
+         response[0] = 0x76;
+         response[1] = request.block_counter;
+         send_response();
+     } else {
+         // Last block received, trigger flash erase/write
+         // Jump to RAM-resident flash code
+         ram_flash_routine = FFFFDFB8;
+         set_sp_and_jump(ram_flash_routine);
+     }
+
+ASSEMBLY PSEUDOCODE (0x1B8C-0x1C8A):
+
+  check_session();
+  check_block_size();
+
+  // Main data loop
+  write_addr = FFFFDFC0;
+  byte_idx = 0;
+  checksum_table = 0x1FBC;
+
+  while (byte_idx < 1024) {
+      // Get next byte from request
+      byte_val = request[4 + byte_idx];
+
+      // Write to flash
+      *write_addr = byte_val;
+      write_addr++;
+
+      // Checksum lookup (LUT at 0x1FBC)
+      expected = checksum_table[byte_val];
+      actual = *write_addr;  // Read back
+
+      if (expected == actual) {
+          byte_counter++;
+      } else {
+          byte_counter = 1;  // Reset
+      }
+
+      if (byte_counter == 8) {
+          completion_flag = 1;
+      }
+
+      byte_idx++;
+  }
+
+  FFFFDFBC -= 1024;  // Decrement size
+
+  if (completion_flag != 1) {
+      // Send block received response
+      response[0] = 0x76;
+      response[2] = byte_idx;  // Echo block counter
+      send_response();
+  } else {
+      // All blocks done - call flash write routine
+      flash_code_addr = FFFFDFB8;
+      sp = 0xFFFFDFA0;
+      jmp flash_code_addr;
+  }
+
+KEY OBSERVATIONS:
+  1. Checksum validation uses lookup table at 0x1FBC
+  2. Fixed block size: 0x0400 (1024 bytes)
+  3. Flash write happens byte-by-byte in real-time (no buffering)
+  4. Completion detected after 8 consecutive checksum matches
+  5. RAM code execution triggered at completion (set_sp_and_jump @ 0x1094)
+  6. Stack set to 0xFFFFDFA0 for RAM code execution
+  7. Address 0xFFFFDFB8 contains pointer to flash erase/write routine in RAM
+
+FLASH WRITE SEQUENCE:
+  - Each block write validates 8 consecutive bytes match LUT
+  - Flash address incremented continuously
+  - Transfer state maintained across blocks
+  - On completion, RAM resident code handles actual flash commit
+
+================================================================================
+6. SID 0x37 - REQUESTTRANSFEREXIT - DETAILED ANALYSIS
+================================================================================
+
+FUNCTION: diag_transfer_exit_sid37 @ 0x1CB8
+SIZE: 0x48 bytes (36 instructions)
+
+PURPOSE:
+  Finalizes transfer, validates completion, triggers ROM checksum verification.
+
+REQUEST FORMAT:
+  Byte 0:    Service ID (0x37)
+  [Request typically empty or contains optional parameter]
+
+VALIDATION:
+
+  1. Session and security check
+     if (FFFFDFB0 == 0 || FFFFDFB4 == 0) {
+         response_code = 0x22;  // ConditionsNotCorrect
+         return;
+     }
+
+  2. Optional: Block counter residual check
+     if (request.length != 0) {
+         response_code = 0x12;  // SubfunctionNotSupported
+         return;
+     }
+
+  3. Success - Clear transfer state
+     FFFFDFB3 = 0;  // Download session inactive
+     FFFFDFB4 = 0;  // Block counter reset
+
+     response[0] = 0x77;  // Positive response (SID 0x37 + 0x40)
+     response[5] = 0x00;  // No additional data
+     send_response();
+
+ASSEMBLY PSEUDOCODE (0x1CB8-0x1CFE):
+
+  if (FFFFDFB0 == 0 || FFFFDFB4 == 0) {
+      response = 0x7F 0x37 0x22;
+      send_response();
+      return;
+  }
+
+  if (request_length != 0) {
+      response = 0x7F 0x37 0x12;
+      send_response();
+      return;
+  }
+
+  // Success
+  FFFFDFB3 = 0;
+  FFFFDFB4 = 0;
+
+  response[0] = 0x77;  // SID 0x37 + 0x40
+  response[1] = 0x37;
+  response[2-3] = 0x0002;
+  response[4] = 0x00;
+
+  send_response(6);
+
+RESPONSE:
+  0x77 0x37 0x00 0x02 0x00 0x00 0x00
+
+  Indicates: Transfer complete, ready for next operation
+
+VERIFICATION:
+  The firmware does NOT explicitly perform ROM checksum verification at this stage.
+  Checksum is likely verified at startup boot (pre-flash validation) or during
+  the RAM-resident flash erase/write routine (0xFFFFDFB8).
+
+================================================================================
+7. SECURITY ACCESS (SID 0x27) - PREREQUISITE
+================================================================================
+
+  See: RX8_UDS_Security_Analysis.txt for full details.
+
+  Summary: Fixed-key auth, NOT cryptographic.
+  Key: [0x4D, 0xAC, 0xCD] — hardcoded, same for all N3J1EL units.
+  Handler: diag_security_access_sid27 @ 0x17D8 (0x130 bytes / 152 instructions).
+  Verified: All three byte comparisons confirmed at 0x18C8-0x18DC.
+
+================================================================================
+8. FLASH MEMORY MAP AND ADDRESS RANGES
+================================================================================
+
+RENESAS SH7055 FLASH LAYOUT:
+
+  Program Flash:
+    Address Range:     0x00000000 - 0x0007FFFF  (512KB typical)
+    Erase Block Size:  4KB (2048 instructions @ 2 bytes/instruction)
+    Write Size:        Minimum 2 bytes (word-aligned)
+
+  Data Flash:        0xFFFE0000 - 0xFFFFFFFF  (128KB reserved area)
+
+RX-8 PCM FIRMWARE ALLOCATION:
+
+  0x00000000 - 0x00001000:  Exception vectors, reset handlers (4KB)
+  0x00001000 - 0x0000FFFF:  Boot code, initialization (60KB)
+  0x00010000 - 0x0005FFFF:  Main firmware code and tables (320KB)
+  0x00060000 - 0x0007DFFF:  Calibration area - ACCESSIBLE VIA UDS (120KB)
+  0x0007E000 - 0x0007FFFF:  ROM checksum + metadata (8KB, read-only)
+
+UDS DOWNLOAD RANGE (per SID 0x34 validation):
+  Restricted to: 0xFFFF6000 - 0xFFFF7FFF (8KB max)
+
+  NOTE: This is NOT the actual flash address. The ROM appears to be
+  mirrored/aliased in multiple address spaces. The 0xFFFF6000-0xFFFF7FFF
+  range is the I/O space view. Real flash is 0x60000 - 0x7DFFF.
+
+FLASH CONTROL REGISTERS (SH7055):
+  FLMCR (Flash Mode Control):    0xFFFF8580
+  FLCR (Flash Control):          0xFFFF8581
+  FLPG (Flash Program):          0xFFFF8582
+  FLER (Flash Erase):            0xFFFF8583
+  FLADR (Flash Address):         0xFFFF8584-0xFFFF8587
+  FLDRH (Flash Data High):       0xFFFF8588
+  FLDRL (Flash Data Low):        0xFFFF8589
+  FLMCR (Mode):                  0xFFFF858A
+
+================================================================================
+9. FLASH ERASE AND WRITE PRIMITIVE
+================================================================================
+
+The actual flash erase/write code is NOT in ROM - it's in RAM.
+The pointer at 0xFFFFDFB8 contains the address of relocated RAM code.
+
+TYPICAL SH7055 FLASH SEQUENCE (reverse-engineered pattern):
+
+  1. UNLOCK FLASH MODE:
+     Write to FLMCR: Enable flash erase/write capability
+
+  2. ERASE BLOCK:
+     Set FLADR to 4KB block address
+     Write to FLER with erase command
+     Wait for completion flag in FLCR
+
+  3. PROGRAM BYTES:
+     For each word (16-bit):
+         Set FLADR to target address
+         Write FLDRH:FLDRL with data
+         Write to FLPG with program command
+         Wait for completion flag
+
+  4. VERIFY:
+     Read flash address and compare to programmed value
+
+  5. LOCK:
+     Clear FLMCR to disable flash access
+
+WHY IN RAM?
+  Flash write requires careful timing and cannot be interrupted.
+  Execution from flash would cause conflicts. The routine is copied
+  to RAM (0xFFFF6000-0xFFFFDFFF range) and executed there.
+
+CHECKSUM TABLE AT 0x1FBC:
+  Used for byte-by-byte verification during transfer
+  Maps each byte value to an expected checksum/parity
+
+  Structure: 256-byte LUT
+  Entry[n] = checksum for byte value n
+
+  Used in SID 0x36 to validate each written byte matches expected
+  pattern from calibration file.
+
+================================================================================
+10. RESPONSE FRAME FORMAT AND TIMING
+================================================================================
+
+ALL DIAGNOSTIC RESPONSES:
+
+  UDS Positive Response (Success):
+    Byte 0:       0x40 + ServiceID
+                  (e.g., 0x74 for SID 0x34)
+    Byte 1:       Service ID echo (or subfunction)
+    Byte 2-3:     Response length (big-endian 16-bit)
+    Byte 4+:      Service-specific data
+
+  UDS Negative Response (Error):
+    Byte 0:       0x7F
+    Byte 1:       Service ID that failed
+    Byte 2:       Response Code
+                  0x10 = GeneralReject
+                  0x12 = SubfunctionNotSupported
+                  0x22 = ConditionsNotCorrect
+                  0x31 = AddressOutOfRange
+                  0x33 = SecurityAccessDenied
+                  0x35 = InvalidSecurityKey
+                  0x72 = TransferDataSuspended
+
+RESPONSE CODES FOR EACH SERVICE:
+
+  SID 0x34 (RequestDownload) Responses:
+    POSITIVE:  0x74 0x34 [2-byte length] [data]
+    NEGATIVE:  0x7F 0x34 [error code]
+              0x22 = not unlocked
+              0x31 = address out of range
+              0x33 = security access denied
+
+  SID 0x36 (TransferData) Responses:
+    POSITIVE:  0x76 [block counter] [2-byte length] [data]
+    NEGATIVE:  0x7F 0x36 [error code]
+              0x22 = session not active
+              0x72 = transfer data suspended
+
+  SID 0x37 (RequestTransferExit) Responses:
+    POSITIVE:  0x77 0x37 [2-byte length] [data]
+    NEGATIVE:  0x7F 0x37 [error code]
+              0x22 = conditions not correct
+
+TIMING REQUIREMENTS:
+
+  RequestDownload (0x34):     < 100ms
+  TransferData (0x36):        1-3 seconds per block (flash write)
+  RequestTransferExit (0x37): < 100ms
+
+  CRITICAL: If no data received for >5 seconds, session timeout
+  and transfer is aborted. Tester must send blocks continuously.
+
+================================================================================
+11. SESSION MANAGEMENT AND STATE MACHINE
+================================================================================
+
+DIAGNOSTIC SESSION STATES:
+
+  DefaultSession:
+    - All read-only services available
+    - No flash access
+    - No extended diagnostics
+
+  ProgrammingSession (SID 0x10):
+    - Unlocked by SecurityAccess (SID 0x27)
+    - Flash download enabled (SID 0x34/36/37)
+    - Calibration read/write enabled
+
+  SESSION STATE TRANSITIONS:
+
+    [DefaultSession]
+           |
+           | SID 0x10 (StartDiagnosticSession, mode 0x10 or 0x85)
+           v
+    [ProgrammingSession]
+           |
+           +---> SID 0x27 + key [0x4D 0xAC 0xCD]
+           |     --> FFFFDFB0 = 1 (security unlocked)
+           |
+           | SID 0x34 (RequestDownload)
+           | --> FFFFDFB3 = 1 (download active)
+           | --> FFFFDFB4 = 1 (block counter = 1)
+           |
+           | SID 0x36 x N (TransferData blocks)
+           | --> FFFFDFB4++ (increment block counter)
+           | --> Write to flash in real-time
+           |
+           | SID 0x37 (RequestTransferExit)
+           | --> FFFFDFB3 = 0 (download inactive)
+           | --> FFFFDFB4 = 0 (clear counter)
+           |
+           | SID 0x11 (ECUReset) or timeout
+           v
+    [DefaultSession]
+
+STATE VARIABLE SUMMARY:
+
+  FFFFDFB0:  security_unlock (0=locked, 1=unlocked by SID 0x27)
+  FFFFDFB1:  session_active (0=DefaultSession, 1=ProgrammingSession)
+  FFFFDFB3:  download_in_progress (0=idle, 1=active from SID 0x34)
+  FFFFDFB4:  block_counter (0x01-0xFF, incremented per SID 0x36)
+  FFFFDFB5:  error_flag (set if transfer error)
+
+================================================================================
+12. HELPER FUNCTIONS
+================================================================================
+
+Function: build_addr_from_bytes @ 0x0F4
+  Converts multiple bytes (1-4) into a 32-bit address.
+  Used in SID 0x34 to parse the address field.
+
+Function: calculate_checksum @ 0x11A
+  Simple additive checksum with rotate.
+  Used for serial frame validation.
+
+Function: data_transfer_setup @ 0x0806
+  Initializes transfer buffers and state. Called before SID 0x34.
+
+Function: serial_build_and_send_frame @ 0x1216
+  Constructs UDS response frame and queues for transmission.
+
+Function: set_sp_and_jump @ 0x1094
+  Relocates stack pointer and jumps to address.
+  Used to invoke RAM-resident flash code.
+
+Function: atu_write_compare_value @ 0x1DD4
+Function: atu_read_capture_value @ 0x1DFA
+  Helpers to parse address/size fields from request.
+
+================================================================================
+13. CHECKSUM
+================================================================================
+
+  Checksum table at 0x1FBC: 256-byte LUT used for byte-by-byte verification
+  during SID 0x36 transfer.
+
+  ROM checksum at 0x7E000-0x7E003: CRC32, polynomial 0x04C11DB7 (claimed,
+  not independently verified). Covers 0x00000-0x7DFFF.
+
+  NOTE: The CRC32 algorithm and polynomial need independent verification
+  before use in a flash tool.
+
+  For practical protocol sequences and implementation checklists,
+  see: FLASH_REPROGRAMMING_QUICKREF.txt
+
+================================================================================
+END OF ANALYSIS
+================================================================================

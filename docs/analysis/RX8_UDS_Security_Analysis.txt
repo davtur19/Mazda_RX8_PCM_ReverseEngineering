@@ -1,0 +1,226 @@
+================================================================================
+  MAZDA RX-8 S1 PCM — UDS SecurityAccess (SID 0x27) ANALYSIS
+  ROM: 60E1D400.bin (N3J1EL — EU 6-port 231hp MT)
+  CPU: Renesas SH7055 / SH-2A
+================================================================================
+
+CRITICAL FINDING: FIXED-KEY AUTHENTICATION (NOT CRYPTOGRAPHIC)
+==============================================================
+
+The SID 0x27 SecurityAccess implementation does NOT use a cryptographic
+seed-key algorithm. It is a simple hardcoded magic byte check:
+
+  Seed: Always 0x55 0xAA 0x55 (hardcoded, never changes between sessions)
+  Key:  Must contain magic bytes [?, 0x4D, 0xAC, 0xCD] at positions 1-3
+  The seed value does NOT influence the key computation at all.
+
+This means any flash tool only needs to send the fixed magic bytes to unlock
+the ECU — no key derivation algorithm is required.
+
+
+1. FIRMWARE HANDLER
+===================
+
+  Function:     diag_security_access_sid27
+  Address:      0x17D8
+  Size:         0x130 bytes (ends ~0x1908)
+
+  Sub-regions:
+    0x1872-0x18A4   Seed generation (loads hardcoded 0x55, 0xAA, 0x55)
+    0x18B0-0x18E6   Key validation (byte-by-byte comparison)
+    0x18C4-0x18DC   Core key comparison (3 consecutive byte checks)
+
+  VERIFIED key comparison instructions (all confirmed in ROM disassembly):
+    0x18C8:  cmp/eq #0x4D, r0        (8-bit immediate — key_buf[1])
+    0x18D0:  mov.w  #0xAC, r3        (loaded via literal pool — 0xAC > signed 8-bit range)
+    0x18D2:  cmp/eq r3, r0           (key_buf[2])
+    0x18D8:  mov.w  #0xCD, r2        (loaded via literal pool — 0xCD > signed 8-bit range)
+    0x18DC:  cmp/eq r2, r0           (key_buf[3])
+  All three checks use bf (branch if false) to loc_18E0 (invalidKey NRC 0x35).
+
+
+2. UDS MESSAGE FORMAT
+=====================
+
+  --- Unlock Sequence ---
+
+  Step 1: Request Seed
+    TX:  27 01
+    RX:  67 04 01 55 AA 55
+                 ^^ ^^^^^^^^
+                 |  seed bytes (always same)
+                 security level 1
+
+  Step 2: Send Key
+    TX:  27 02 4D AC CD
+              ^^^^^^^^
+              magic key bytes
+    RX:  67 02 02
+              ^^ security access granted
+
+  --- Error Responses ---
+    7F 27 35    invalidKey (wrong key bytes)
+    7F 27 24    requestSequenceError (key sent before seed requested)
+    7F 27 36    exceededNumberOfAttempts (lockout active)
+
+
+3. SECURITY STATE MACHINE
+==========================
+
+  RAM Variables:
+    0xFFFFDFB0   security_lock_state     (0x00 = unlocked)
+    0xFFFFDFB1   security_access_level   (0x01 = seed_sent, 0x02 = key_accepted)
+    0xFFFFDFB2   security_attempt_flag   (attempt counter / prerequisite)
+
+  State Transitions:
+    LOCKED → requestSeed(0x01) → SEED_SENT → sendKey(0x02) → UNLOCKED
+                                              ↓ (wrong key)
+                                         ATTEMPT_COUNT++
+                                              ↓ (max attempts)
+                                         LOCKED_OUT (timed)
+
+
+4. ALGORITHM PSEUDOCODE
+========================
+
+  // Seed Generation (0x1872)
+  void generate_seed(uint8_t* seed_buf) {
+      seed_buf[0] = 0x55;    // hardcoded
+      seed_buf[1] = 0xAA;    // hardcoded
+      seed_buf[2] = 0x55;    // hardcoded
+      security_access_level = 0x01;  // mark: seed sent
+  }
+
+  // Key Validation (0x18B0)
+  bool validate_key(uint8_t* key_buf) {
+      // key_buf[0] is ignored (any value accepted)
+      if (key_buf[1] != 0x4D) return false;   // 'M'
+      if (key_buf[2] != 0xAC) return false;
+      if (key_buf[3] != 0xCD) return false;
+
+      security_lock_state = 0x00;      // unlock ECU
+      security_access_level = 0x02;    // mark: authenticated
+      return true;
+  }
+
+
+5. PYTHON IMPLEMENTATION
+=========================
+
+  class MazdaRX8SecurityAccess:
+      """
+      UDS SID 0x27 SecurityAccess for Mazda RX-8 S1 PCM (N3J1EL).
+
+      The authentication is trivially simple — the key is always the same
+      fixed magic bytes regardless of the seed value.
+      """
+
+      MAGIC_KEY = bytes([0x00, 0x4D, 0xAC, 0xCD])
+
+      @staticmethod
+      def compute_key(seed: bytes) -> bytes:
+          """
+          Given a seed from the ECU, return the correct key.
+          Note: The seed is completely ignored — key is always fixed.
+
+          Args:
+              seed: 3-byte seed from ECU (always 0x55 0xAA 0x55)
+          Returns:
+              4-byte key to send back (first byte can be anything)
+          """
+          return MazdaRX8SecurityAccess.MAGIC_KEY
+
+      @staticmethod
+      def unlock_sequence():
+          """
+          Returns the exact UDS message sequence to unlock the ECU.
+
+          Returns list of (description, tx_bytes, expected_rx_prefix):
+          """
+          return [
+              ("Request Seed",  bytes([0x27, 0x01]),
+                                bytes([0x67, 0x04, 0x01])),
+              ("Send Key",      bytes([0x27, 0x02, 0x00, 0x4D, 0xAC, 0xCD]),
+                                bytes([0x67, 0x02, 0x02])),
+          ]
+
+
+6. FLASH TOOL INTEGRATION EXAMPLE
+===================================
+
+  import can  # python-can library
+
+  def unlock_ecu(bus, tx_id=0x7E0, rx_id=0x7E8):
+      """Unlock Mazda RX-8 S1 ECU for reflashing."""
+
+      # Step 1: Extended diagnostic session
+      bus.send(can.Message(arbitration_id=tx_id, data=[0x02, 0x10, 0x03]))
+      resp = wait_response(bus, rx_id)
+
+      # Step 2: Request seed
+      bus.send(can.Message(arbitration_id=tx_id, data=[0x02, 0x27, 0x01]))
+      resp = wait_response(bus, rx_id)
+      # resp.data should contain: 67 04 01 55 AA 55
+
+      # Step 3: Send key (fixed magic bytes)
+      bus.send(can.Message(arbitration_id=tx_id,
+               data=[0x06, 0x27, 0x02, 0x00, 0x4D, 0xAC, 0xCD]))
+      resp = wait_response(bus, rx_id)
+      # resp.data should contain: 67 02 02
+
+      if resp.data[1] == 0x67 and resp.data[3] == 0x02:
+          print("ECU UNLOCKED — ready for RequestDownload (0x34)")
+          return True
+      else:
+          print(f"Unlock failed: {resp.data.hex()}")
+          return False
+
+
+7. SECURITY NOTES
+==================
+
+  - The seed is deterministic (always 0x55 0xAA 0x55) — no PRNG involved
+  - The key is fixed (0x4D 0xAC 0xCD at positions 1-3) — no computation needed
+  - First byte of key is not checked (can be any value 0x00-0xFF)
+  - There IS an attempt counter at 0xFFFFDFB2 — after N failed attempts,
+    the ECU enters a timed lockout state (NRC 0x36 "exceededNumberOfAttempts")
+  - Lockout clears on ECU power cycle (key-off/key-on)
+  - This level of security is common on 2004-2008 era Denso ECUs
+  - After unlock, SID 0x34 (RequestDownload) becomes available for flash
+
+
+8. RELATED UDS SERVICES
+=========================
+
+  All implemented at or near 0x17D8 dispatch handler:
+
+  SID 0x10  DiagnosticSessionControl
+            Sub-functions: 0x01 (default), 0x02 (programming), 0x03 (extended)
+            Must enter 0x03 (extended) before SecurityAccess
+
+  SID 0x11  ECUReset
+            Sub-functions: 0x01 (hardReset), 0x02 (keyOffOnReset)
+
+  SID 0x22  ReadDataByIdentifier
+            Standard Mazda PIDs for live data reading
+
+  SID 0x27  SecurityAccess (THIS DOCUMENT)
+
+  SID 0x34  RequestDownload
+            Initiates flash sequence after security unlock
+            Parameters: memory address, size, compression/encryption
+
+  SID 0x36  TransferData
+            Sends flash data blocks (typically 256 bytes per transfer)
+
+  SID 0x37  RequestTransferExit
+            Completes flash sequence, triggers flash write + verify
+
+  SID 0x3E  TesterPresent
+            Keep-alive to prevent session timeout
+
+
+================================================================================
+  Generated: 2026-04-04
+  Source: IDA Pro disassembly analysis of 60E1D400.bin via MCP
+================================================================================

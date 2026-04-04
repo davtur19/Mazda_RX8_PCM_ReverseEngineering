@@ -1,0 +1,363 @@
+================================================================================
+MAZDA RX-8 S1 PCM FIRMWARE - RAM MAP SUMMARY & QUICK REFERENCE
+================================================================================
+
+DOCUMENT: RX8_RAM_Map.txt (642 lines)
+Generated: 2026-04-04
+Firmware: 60E1D400.bin (N3J1EL EU 6-port 231hp MT)
+Target: Renesas SH7055 / SH-2A Big-Endian
+
+================================================================================
+TOTAL MEMORY ADDRESSED
+================================================================================
+
+RAM Region: 0xFFFF6000–0xFFFFDFFF (32KB total)
+    - Sensors/ADC: 0xFFFF9F00–0xFFFFA1FF (512 bytes)
+    - Engine Control: 0xFFFFA000–0xFFFFB800 (6144 bytes)
+    - Knock Detection: 0xFFFFA4B4–0xFFFFA571 (190 bytes)
+    - Diagnostics/Cache: 0xFFFFC000–0xFFFFD9FF (6656 bytes)
+    - RTOS/System: 0xFFFFDFA0–0xFFFFDFFF (96 bytes)
+
+================================================================================
+FUNCTIONAL AREA BREAKDOWN
+================================================================================
+
+1. SENSORS & ADC SUBSYSTEM
+   └─ 0xFFFF9F00–0xFFFFA0C7 (448 bytes)
+      • Sensor state arrays (4 channels × 32 bytes)
+      • ADC result cache for 6 analog inputs
+      • Engine speed (RPM) value
+      • Per-channel calibration state
+
+   Key Variables:
+   ├─ 0xFFFF9F00–0xFFFF9F7F: Sensor State Array (TPS, MAF, CLT, IAT)
+   ├─ 0xFFFF9F9C: Engine Speed (RPM value)
+   ├─ 0xFFFF9F9C–0xFFFF9FAB: ADC Result Cache
+   └─ 0xFFFFA010–0xFFFFA0C7: Sensor Config (4 channels)
+
+   Related Functions:
+   ├─ sensor_main_process (0x9070)
+   ├─ adc_read_channel (0x70D0)
+   ├─ adc_single_convert (0x720E)
+   └─ adc_read_and_merge_flags (0x71AC)
+
+---
+
+2. FUEL INJECTION SUBSYSTEM
+   └─ 0xFFFFA100–0xFFFFA22A (299 bytes)
+      • Fuel calculation state
+      • Injector pulse width (ATU output)
+      • Fuel cutoff flags (for rev limiter)
+      • CAN message buffer (12-byte entries)
+      • Per-rotor injection flags
+
+   Key Variables:
+   ├─ 0xFFFFA100–0xFFFFA167: Fuel Calculation State (fuel trimming, pulse width)
+   ├─ 0xFFFFA168–0xFFFFA16F: Fuel Cutoff State (rev limiter kill)
+   ├─ 0xFFFFA170–0xFFFFA18B: CAN Message Buffer (2 × 12 bytes)
+   └─ 0xFFFFA220–0xFFFFA22A: Per-Rotor Fuel Flags (rotor 1/2 injection triggers)
+
+   Related Functions:
+   ├─ fuel_calc_per_rotor (0x9534)
+   ├─ fuel_injector_pulse_calc (0x10620)
+   ├─ injector_pulse_width_calc (0xB2E4)
+   ├─ rotor_fuel_calc_dispatcher (0xB57A)
+   └─ fuel_calc_entry (0x9528)
+
+---
+
+3. IGNITION & ROTOR SYNCHRONIZATION
+   └─ 0xFFFFA1D8–0xFFFFA323 (76 bytes)
+      • Rotor position and angle tracking
+      • Ignition advance/retard values
+      • Spark timing calculation state
+      • Crank/cam sync detection
+
+   Key Variables:
+   ├─ 0xFFFFA1D8–0xFFFFA208: Rotor Position & Timing Data (rotor angles, sync counter)
+   └─ 0xFFFFA300–0xFFFFA323: Ignition Timing State (advance, dwell, output state)
+
+   Related Functions:
+   ├─ rotor_position_synchronization (0xAF10)
+   ├─ ignition_timing_calc (0xE7F8)
+   ├─ configure_atuii_timers (0xADD2)
+   └─ ign_output_calc_main
+
+---
+
+4. LAMBDA CLOSED-LOOP FEEDBACK (O2 SENSOR CONTROL)
+   └─ 0xFFFFA1C0–0xFFFFA3F8 (568 bytes)
+      • O2 sensor voltage measurements
+      • PID controller state (proportional, integral, derivative)
+      • Fuel trim calculations
+      • Sensor health monitoring
+      • Lambda mode and enable logic
+      • Advanced filtering and rate limiting
+
+   Key Variables:
+   ├─ 0xFFFFA1C0–0xFFFFA1C9: Task State Flags (scheduler coordination)
+   ├─ 0xFFFFA324: Closed-Loop Status Flag (0x00=open loop, 0x01=CL active)
+   ├─ 0xFFFFA328–0xFFFFA38C: Lambda Control Block (PID state, O2 voltage, fuel trim)
+   └─ 0xFFFFA390–0xFFFFA3F8: Advanced Lambda State (setpoints, rate limiting, filtering)
+
+   Related Functions:
+   ├─ lambda_control_closed_loop (0xC508)
+   ├─ throttle_position_classify (0xC460)
+   └─ adc_read_and_merge_flags (0x71AC)
+
+   CAN Output: Fuel trim values sent via CAN ID 0x1A4 (dashboard lights, diagnostics)
+
+---
+
+5. KNOCK DETECTION & CONTROL
+   └─ 0xFFFFA4A4–0xFFFFA571 (205 bytes)
+      • Per-cylinder knock detection state
+      • Knock magnitude calculations
+      • Adaptive spark retard control
+      • Knock recovery timer
+
+   Key Variables:
+   ├─ 0xFFFFA4A4–0xFFFFA4AE: Rev Limiter State (current RPM, thresholds)
+   ├─ 0xFFFFA4B4–0xFFFFA571: Knock Detection Block (2 cylinders × 25 bytes each)
+   └─ 0xFFFFA564: Knock Counter (total knock events detected)
+
+   Related Functions:
+   └─ knock_detection_processing (0xF770)
+
+   ROM Tables Referenced:
+   ├─ 0x7A450: Knock Sensitivity Rotor #1
+   ├─ 0x7A4D8: Knock Sensitivity Rotor #2
+   └─ 0x7A318: Knock Voltage To Magnitude
+
+---
+
+6. REV LIMITER & RPM CONTROL
+   └─ 0xFFFFA374–0xFFFFA386 (19 bytes)
+      • RPM threshold tracking
+      • Soft/hard fuel cutoff flags
+      • RPM rate of change
+
+   Key Variables:
+   ├─ 0xFFFFA374–0xFFFFA37A: RPM Error & Raw RPM (for threshold crossing)
+   ├─ 0xFFFFA386: Fuel Cutoff Flag (rev limiter kill)
+   └─ 0xFFFFA4A4–0xFFFFA4AE: Rev Limiter State (threshold, current RPM)
+
+   Related Functions:
+   ├─ rpm_limiter_main (0xF192)
+   └─ rpm_limiter_fuel_cutoff (0xC59E)
+
+---
+
+7. IDLE SPEED CONTROL
+   └─ 0xFFFFA680–0xFFFFA6FF (128 bytes)
+      • Idle target RPM calculation
+      • Idle air control valve state
+      • Idle PID controller
+
+   Key Variables:
+   └─ 0xFFFFA680: Idle Target RPM
+
+   ROM Tables Referenced:
+   ├─ 0x6E864-0x6E890: Idle Target A
+   ├─ 0x6E890-0x6E8C0: Idle Target B
+   ├─ 0x6E8C0-0x6E8F8: Idle Target C
+   ├─ 0x6E8F8-0x6E950: Idle Target D
+   ├─ 0x6E950-0x6E998: Idle Target E
+   ├─ 0x6E998-0x6E9B0: Idle Target F
+   ├─ 0x6E9B0-0x6E9CC: Idle Target G
+   ├─ 0x6E9CC-0x6E9DC: Idle Target H
+   └─ 0x6E9DC-0x6EA08: Idle Target I
+
+---
+
+8. CAN BUS & COMMUNICATION
+   └─ 0xFFFFA170–0xFFFFA3FB (643 bytes)
+      • Double-buffered CAN message staging
+      • Mailbox status flags
+      • CAN initialization flag
+      • Task synchronization counters
+
+   Key Variables:
+   ├─ 0xFFFFA170–0xFFFFA18B: CAN Message Buffer (2 × 12-byte messages)
+   ├─ 0xFFFFA3FA: CAN Init Status Flag (0x55=OK, 0xAA=Error)
+   └─ 0xFFFFA3FB: CAN Mailbox Status (transmit request flags)
+
+   CAN Messages:
+   ├─ CAN ID 0xC9: PCM status (RPM, engine state)
+   └─ CAN ID 0x1A4: Diagnostics (temperature, check engine light, fuel trim)
+
+   Related Functions:
+   ├─ can_msg_buffer_read_next (0xA436)
+   ├─ can_schedule_tx_msg_with_timing (0xC98A)
+   ├─ hcan0_mailbox_rotate_enqueue (0xA608)
+   ├─ hcan_init_and_status_check (0xD6A0)
+   └─ can_periodic_task_handler (0xA57C)
+
+---
+
+9. TASK SCHEDULER & RTOS
+   └─ 0xFFFFA1C0–0xFFFFA1C9 + 0xFFFFDFA0–0xFFFFDFFF (96 bytes)
+      • Multi-task coordination flags
+      • Priority levels and interrupt state
+      • Stack pointer base
+      • Warm reset detection
+      • System fault indicators
+
+   Key Variables:
+   ├─ 0xFFFFA1C0–0xFFFFA1C9: Task State Flags (fuel, ignition, lambda, knock pending)
+   ├─ 0xFFFFA3F9–0xFFFFA3FC: Status Flags & FPU Control
+   ├─ 0xFFFFDFA0: Stack Pointer Base (grows downward)
+   ├─ 0xFFFFDFFC: Warm-Reset Magic Word (0x5AA5A55A)
+   └─ 0xFFFFDFF0–0xFFFFDFFB: System Status Flags (WDT, interrupts, exceptions)
+
+   Related Functions:
+   ├─ task_scheduler (0xAB06)
+   ├─ task_state_mapper (0xAC94)
+   ├─ main_periodic_task (0xDD76)
+   ├─ task_scheduler_check_and_sync (0xAECC)
+   └─ watchdog_service (0x11E8)
+
+---
+
+10. DIAGNOSTICS & FAULT HANDLING
+    └─ 0xFFFFC000–0xFFFFD9FF (6656 bytes)
+       • Diagnostic trouble code (DTC) storage
+       • DTC enable/disable masks
+       • Lambda safety clamps
+       • Freeze frame data
+       • Checksum validation flags
+
+    Key Variables:
+    ├─ 0xFFFFC0CC–0xFFFFC0D4: Lambda Safety Clamps (max/min fuel trim limits)
+    ├─ 0xFFFFD96C: DTC Global Enable Mask (0=sensor faults disabled, etc.)
+    └─ 0xFFFFD970–0xFFFFD9FF: DTC Storage Array (max 18 DTCs)
+
+    DTC Ranges (120+ total codes):
+    ├─ P0030–P0999: Powertrain DTCs (fuel, ignition, emissions)
+    ├─ C0100–C0999: Chassis DTCs (ABS, traction control)
+    ├─ U1200–U1999: Network DTCs (CAN bus faults)
+    └─ B0000–B0999: Body DTCs (lighting, HVAC)
+
+    Related Functions:
+    ├─ pcm_fault_check_and_clear (0xDDF0)
+    ├─ checksum_failure_flag_check (0xD650)
+    ├─ reset_all_status_flags (0xD666)
+    └─ memory_checksum_validator_runner (0xD704)
+
+---
+
+11. HARDWARE I/O & IGNITION SWITCH
+    └─ 0xFFFF8030 + 0xFFFF9F18 (2 bytes)
+       • Ignition key position input
+       • Generic port I/O register
+
+    Key Variables:
+    ├─ 0xFFFF8030: Ignition Switch Status (0=ACC, 1=RUN, 2=START, 3=OFF)
+    └─ 0xFFFF9F18: Generic Port I/O Register (debug/diagnostic GPIO)
+
+    Related Functions:
+    ├─ read_ign_switch_status (0xAD3C)
+    └─ engine_startup_initialization (0xAD5A)
+
+================================================================================
+CRITICAL ACCESS PATTERNS & TIMING
+================================================================================
+
+ATOMIC OPERATIONS (MUST NOT BE INTERRUPTED):
+    - Task state flags (0xFFFFA1C0–0xFFFFA1C9): Read-Modify-Write cycles
+    - Rotor timing state (0xFFFFA1D8–0xFFFFA208): Accessed by interrupt + main
+    - Lambda PID state (0xFFFFA328–0xFFFFA38C): Requires consistent snapshot
+    - Knock detection (0xFFFFA4B4–0xFFFFA571): Per-cylinder counter updates
+
+UPDATE FREQUENCIES:
+    - Sensor state: Every ADC cycle (≈10ms)
+    - Fuel calculation: Every 25-50ms
+    - Ignition timing: Every 10-50ms
+    - Lambda PID: Every 100-200ms
+    - CAN messages: Every 100-300ms (300ms periodic cycle)
+    - Knock detection: Per-cylinder at crank angle (≈2.5ms at 6000 RPM)
+
+INITIALIZATION:
+    - Cold boot: All RAM cleared by cold_start_ram_init (0x5B0)
+    - Warm reset: RAM preserved, status checked at 0xFFFFDFFC
+    - Startup sequence: pcm_init_sequence (0xDD30) calls 9 init routines
+
+WATCHDOG & SAFETY:
+    - Watchdog counter at 0xFFFFDFF4 (counts down, reset by watchdog_service)
+    - Checksum validation at 0xFFFFA3F9 (detects RAM corruption)
+    - Stack guard at 0xFFFFDFA0 (watchdog if SP underflows)
+    - Warm reset magic at 0xFFFFDFFC distinguishes power-on vs restart
+
+================================================================================
+HOW TO USE THIS DOCUMENT
+================================================================================
+
+1. FINDING A VARIABLE
+   → See "SUMMARY TABLE" section for all addresses by functional area
+   → Cross-reference function names in IDA Pro disassembly
+   → Check "COMPLETE FUNCTION CROSS-REFERENCE" for read/write patterns
+
+2. UNDERSTANDING DATA FLOW
+   → Fuel: sensors → 0xFFFFA100 → rotor_fuel_calc_dispatcher → 0xFFFFA220
+   → Ignition: rotor_sync → 0xFFFFA1D8 → ignition_timing_calc → 0xFFFFA300
+   → Lambda: ADC → 0xFFFF9F9C-0xFFFFACB → lambda_control_closed_loop → 0xFFFFA328
+
+3. DEBUGGING REAL-TIME ISSUES
+   → Check 0xFFFFA1C0–0xFFFFA1C9 for task state conflicts
+   → Check 0xFFFFDFF4 for watchdog timeout
+   → Check 0xFFFFA3F9 for corruption detection flag
+
+4. ADDING NEW VARIABLES
+   → Use addresses in "Reserved" sections (0xFFFFA0D8+, 0xFFFFA600+, 0xFFFFD9FF+)
+   → Maintain byte alignment (32-bit floats on 4-byte boundaries)
+   → Update task scheduler flags if adding new engine control variables
+   → Register address with IDA Pro to enable symbolic debugging
+
+================================================================================
+FILE LOCATION
+================================================================================
+
+Document: /sessions/adoring-trusting-hypatia/mnt/Mazda_RX8_PCM_ReverseEngineering-master/RX8_RAM_Map.txt
+
+Size: 642 lines, ~45KB
+Contains: 
+    - 11 functional area sections (Sensors, Fuel, Ignition, Lambda, Knock, etc.)
+    - 50+ individual RAM variables with full descriptions
+    - Address ranges, data types, and access patterns
+    - 130+ function cross-references
+    - Real-time timing constraints and initialization sequences
+    - Complete DTC ranges and safety clamp limits
+
+Related Documents:
+    - RE_Session2_Summary.md: Function renaming and subsystem analysis
+    - RX8_Firmware_Pseudocode_Complete.txt: Decompiled pseudocode (sensor, knock, lambda)
+    - Mazda_RX8_PCM_ReverseEngineering-master/: Project root directory
+
+================================================================================
+NEXT ANALYSIS STEPS
+================================================================================
+
+1. Verify RAM variable addresses by cross-checking with:
+   - IDA Pro disassembly (xrefs to 0xFFFF addresses)
+   - Ghidra archives in /Ghidra_Archives/
+   - RomRaider rx8_defs.xml (ROM calibration table references)
+
+2. Expand documentation for:
+   - EVAP canister purge control (0xFFFFA226)
+   - Oil metering pump (OMP) control state
+   - Manifold pressure estimation (referenced at 0x15354)
+   - Fuel pressure regulator control (referenced at 0x15D82)
+   - Intake port timing adjustments (labeled "VVT" in codebase)
+
+3. Create IDA Pro script to:
+   - Auto-import all RAM variables as named globals
+   - Generate struct definitions from this document
+   - Cross-reference function calls to validate access patterns
+   - Build call graph for data flow analysis
+
+4. Correlate with:
+   - Oscilloscope traces (RPM, injector PWM, ignition dwell)
+   - CAN bus logs (OBD-II services, diagnostic readiness)
+   - Stock ROM modifications (tuner ROM comparisons)
+
+================================================================================

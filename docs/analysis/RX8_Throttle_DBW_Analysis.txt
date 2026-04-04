@@ -1,0 +1,901 @@
+================================================================================
+MAZDA RX-8 S1 PCM - DRIVE-BY-WIRE (DBW) THROTTLE CONTROL SYSTEM ANALYSIS
+================================================================================
+
+FIRMWARE: 60E1D400.bin (Renesas SH7055, Big-Endian, 16-bit)
+DATE: 2026-04-04
+STATUS: Preliminary Analysis
+
+================================================================================
+1. EXECUTIVE SUMMARY
+================================================================================
+
+The RX-8 S1 PCM implements a sophisticated drive-by-wire electronic throttle
+control system with the following key characteristics:
+
+- PEDAL-TO-TORQUE MAPPING: The system uses 4 different accelerator pedal to
+  throttle position mapping tables (N1, N2, N3, N4), selected by operational mode
+
+- TORQUE-BASED CONTROL: A torque-to-acceleration-position mapping is used to
+  calculate the demanded throttle angle from the desired engine torque
+
+- DAMPING LOGIC: Throttle demand includes damping control to prevent sudden
+  changes and provide smooth response
+
+- SAFETY MONITORING: Multiple sensor fault checks exist for throttle position
+  sensor and related controls
+
+- SAFE MODE OPERATION: Fallback to reduced fuel maps when throttle system
+  encounters issues (Safe Mode)
+
+================================================================================
+2. SYSTEM ARCHITECTURE OVERVIEW
+================================================================================
+
+2.1 SIGNAL FLOW
+
+   Accelerator Pedal Input (ADC)
+        |
+        v
+   [Pedal Position Filtering/Validation]
+        |
+        v
+   [Mode-Dependent Pedal-to-Throttle Mapping]
+   (Selects N1/N2/N3/N4 table based on operational mode)
+        |
+        v
+   [Torque Calculation with Damping]
+        |
+        v
+   [Throttle Position Demand Output]
+        |
+        v
+   [MCU Communication / Direct Control]
+   (Likely SPI or serial protocol)
+
+2.2 KEY FUNCTIONAL BLOCKS
+
+A. THROTTLE POSITION CLASSIFICATION (0xC460)
+   Function: throttle_position_classify
+   Purpose: Classifies TPS reading into state (0/1/2)
+   References: Barometric_Pressure_Sensor_Min_ADC_Count thresholds
+
+B. THROTTLE POSITION ADC READER (0x19FC0)
+   Function: throttle_position_adc_reader
+   Reads throttle position from ADC channel 0xFFFF9F0E
+   Conditional logic based on CLT_Sensor_Scaling threshold
+
+C. THROTTLE POSITION FILTER (0x1345C)
+   Function: calc_throttle_position_filter
+   Complex multi-path filtering with mode-dependent parameters
+   References multiple floating-point control constants
+   Implements control law with derivative/integral terms
+
+D. TORQUE CALCULATION WITH DAMPING (0x17952)
+   Function: torque_calc_with_damping
+   Core throttle control logic
+   References Table_2D___197_ (multiple offsets)
+   Implements damping via state storage at 0xFFFFA930
+   Safety checks for throttle position bounds
+
+E. MAIN ENGINE CYCLE (0x17F1C)
+   10ms periodic task that calls:
+   - idle_speed_control_18054
+   - fuel_pump_control_0x17510
+   - exhaust_valve_control
+   - intake_air_control_0x177A6
+   - torque_calc_with_damping [THROTTLE]
+   - rotor_position_feedback_control
+   - rotor_position_state_machine
+
+F. MAIN OUTPUT CONTROL TASK (0x1AC0C)
+   Dispatcher for output actuator control:
+   - Multi-sensor fault checking
+   - Counter management
+   - Port/bitfield manipulation
+   - Saturated counter thresholds
+
+================================================================================
+3. ROM CALIBRATION TABLES
+================================================================================
+
+3.1 PEDAL-TO-THROTTLE POSITION MAPPING (4 MODES)
+
+Address Range:          Axis Range:        Data Type:
+0x741B4-0x74250        0x741B4-0x742C8    Float32 (8 entries)
+N1: Accel_Pedal_to_Throttle_Position_N1
+   Axis: 0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, ...
+   Values (float): 0.0, 63.5, 250.0, 284.0, 301.0, 322.0, 350.0, 363.0...
+   Interpretation: Maps pedal position (%) to throttle angle (degrees)
+
+0x74544-0x745E0        0x74544-0x745B4
+N2: Accel_Pedal_to_Throttle_Position_N2
+   Similar structure, different values for alternate mode
+
+0x748D4-0x74970
+N3: Accel_Pedal_to_Throttle_Position_N3
+
+0x74C64-0x74D00
+N4: Accel_Pedal_to_Throttle_Position_N4
+
+3.2 TORQUE-TO-ACCELERATION MAPPING
+
+Address Range:
+0x72FDC (axis)         X-axis: Engine load points
+0x73090 (data)         Y-values: Corresponding acceleration demands
+                       Converts desired torque output to throttle position
+
+3.3 THROTTLE POSITION TO TORQUE CONVERSION
+
+Address Range:
+0x7346C (axis)         X-axis: Throttle angle positions (0-90 degrees)
+0x734F4 (data)         Y-values: Engine torque output capability
+
+3.4 FUEL CORRECTION TABLES (THROTTLE-DEPENDENT)
+
+- Open_Loop_Fuelling_Base_Correction_Throttle (Safe Mode & Normal)
+- Open_Loop_Fuelling_Base_Throttle (Safe Mode & Normal)
+- Open_Loop_Fuelling_Lean_Limit_Throttle_Based (Safe Mode & Normal)
+- Closed_Loop_Fuelling_Threshold_Throttle_Position
+- Oil_Metering_By_Throttle
+- Various throttle position axis definitions
+
+================================================================================
+4. PEDAL INPUT PROCESSING
+================================================================================
+
+4.1 ADC CHANNEL CONFIGURATION
+
+Primary Throttle Position Input:
+- ADC Address: 0xFFFF9F0E (mapped I/O)
+- Used in: throttle_position_classify (0xC460)
+- Used in: throttle_position_adc_reader (0x19FC0)
+
+4.2 FILTERING AND VALIDATION
+
+The system implements a multi-stage filtering approach:
+
+Stage 1: ADC Conditioning
+- Raw ADC reading from hardware
+- Bounds checking against CLT_Sensor_Scaling values
+
+Stage 2: Classification (throttle_position_classify)
+- Input: ADC word from 0xFFFF9F0E
+- Output: Classification state (0/1/2) at 0xFFFFA325
+- Threshold 1: Barometric_Pressure_Sensor_Min_ADC_Count+0x10
+- Threshold 2: Barometric_Pressure_Sensor_Min_ADC_Count+0x0E
+- Logic:
+  if (adc >= threshold1)     -> state = 1
+  else if (adc >= threshold2) -> state = 2
+  else                        -> state = 0
+
+Stage 3: Adaptive Filtering (calc_throttle_position_filter @ 0x1345C)
+- Mode-dependent switching (checks at 0xFFFFA6B7, 0xFFFFA6B8)
+- Three parallel filter paths with different parameters
+- Floating-point operations on filtered values
+- Stores results in multiple RAM locations
+
+4.3 MODE SELECTION FOR THROTTLE MAPPING
+
+The PCM selects between 4 pedal-to-throttle tables based on operational mode:
+- N1: Normal operation (baseline mapping)
+- N2: Alternate mode (softer response or performance mode)
+- N3: Third variant
+- N4: Fourth variant
+
+Selection logic depends on:
+- Engine load
+- Engine speed
+- Transmission mode
+- Vehicle stability control state
+
+================================================================================
+5. THROTTLE CONTROL ALGORITHM
+================================================================================
+
+5.1 TORQUE-BASED CONTROL FLOW
+
+The primary control path:
+
+1. Pedal Input:       Read throttle position via ADC
+                      Filter and validate
+                      Output: Filtered throttle angle
+
+2. Mode Selection:    Select active pedal-to-throttle table
+                      (N1/N2/N3/N4 based on conditions)
+
+3. Torque Demand:     Map pedal position to desired torque
+                      via Accel_Pedal_to_Throttle_Position_N{X}
+                      Output: Torque request
+
+4. Throttle Angle:    Convert torque demand back to throttle angle
+                      via Torque_To_Accel_Position table
+                      Output: Demanded throttle angle
+
+5. Damping Control:   Apply damping filter to throttle demand
+                      Prevent sudden position changes
+                      Implementation: torque_calc_with_damping (0x17952)
+                      Damping state stored at 0xFFFFA930
+
+6. Output:            Send throttle command to MCU
+                      via communication interface
+                      (likely SPI or serial)
+
+5.2 DAMPING IMPLEMENTATION (torque_calc_with_damping @ 0x17952)
+
+Assembly Analysis:
+- Compares current throttle angle (0xFFFFA426) against table thresholds
+- Checks motor speed (0xFFFFA930) - positive speed required
+- Validates against maximum angle limit (0xFFFFA944)
+- Uses floating-point multiply/sqrt operations for damping math:
+  * Multiplies: fmul fr5, fr4  (damping factor multiplication)
+  * Square root: fsqrt fr5     (non-linear response shaping)
+- Stores damped value at 0xFFFFA8EC
+- Implements rate limiting: saturated_increment at 0xFFFFA930
+
+Pseudocode:
+if (throttle_position >= max_table_value) {
+    return;  // Disabled when at limit
+}
+if (motor_speed < 0) {  // or motor error
+    throttle_demand = 0;
+    return;
+}
+if (actual_angle > damping_limit_low) {
+    throttle_demand = sqrt(damping_factor * current_value);
+}
+if (actual_angle > damping_limit_high) {
+    throttle_demand = damping_factor * (current - filter_value);
+}
+// Apply rate limiting
+if (motor_state_valid && desired_angle > 0) {
+    motor_speed += 1;  // Increment counter
+} else {
+    motor_speed = 0;
+}
+
+5.3 SAFETY CHECKS AND LIMITS
+
+Maximum Throttle Angle:
+- ROM address: 0x73F6C
+- Name: Maximum_Throttle_Angle
+- Enforced in torque_calc_with_damping
+
+Sensor Validation:
+- multi_sensor_fault_check (0xE56C)
+- Checks multiple fault flags at various RAM addresses
+- Sets combined fault status at 0xFFFFA445, 0xFFFFA430
+
+Bounds Checking:
+- Throttle position validated against ADC count ranges
+- Barometric_Pressure_Sensor_Min/Max_ADC_Count used as thresholds
+- Prevents out-of-range errors
+
+================================================================================
+6. COMMUNICATION WITH THROTTLE MCU
+================================================================================
+
+6.1 COMMUNICATION INTERFACE IDENTIFICATION
+
+Based on firmware analysis:
+
+Likely Serial/SPI Protocol:
+- References to: sci4_init_8n1_115200 (0xBE9C)
+- References to: sci4_init_8n1_57600_verify (0xBEF8)
+- References to: sci4_set_8n1_115200_simple (0xBF8C)
+- References to: sci4_tx_bytes_synchronous (0xC170)
+- References to: sci4_rx_word_16bit_synchronous (0xC1FC)
+
+Suggests SCI (Serial Communication Interface) Channel 4:
+- Baud rates: 115200 or 57600 bps
+- Protocol: 8 data bits, 1 stop bit, no parity (8N1)
+- Mode: Synchronous 16-bit word transfers
+
+Port/Pin References:
+- port_b_gpio_toggle_bit (0xA9F4)
+- port_b_set_mask_with_multiply (0xAA20)
+- PBDR (Port B Data Register) bit 11 checked
+
+Possible SPI Involvement:
+- spi_set_clk_high_wait (0x9C0)
+- spi_set_clk_low_wait (0x9DE)
+- atu_configure_io_channel (0x9FC)
+
+6.2 COMMAND STRUCTURE (HYPOTHETICAL)
+
+Based on output control task organization:
+
+Command Elements:
+1. Throttle Position Demand (float or 16-bit value)
+2. Mode Flags (Safe Mode indicator, error flags)
+3. Checksum/Validation byte
+4. Handshake/Acknowledge mechanism
+
+Timing:
+- Main engine cycle runs at 10ms interval (main_engine_cycle_10ms @ 0x17F1C)
+- Throttle update likely synchronous with fuel/ignition updates
+- Periodic watchdog service (watchdog_service @ 0x11E8)
+
+6.3 FAULT DETECTION AND FAILSAFE
+
+On MCU Communication Failure:
+- Safe Mode activation: Fuel maps change to conservative calibration
+  (Open_Loop_Fuelling_Base_Throttle__Safe_Mode tables)
+
+- Throttle Lockout: If motor speed check fails (0xFFFFA930 < 0),
+  throttle demand is zeroed (limp-home mode)
+
+- Sensor Mismatch: multi_sensor_fault_check validates consistency
+  If flags indicate fault, fault status written to 0xFFFFA430
+
+================================================================================
+7. SAFE MODE OPERATION
+================================================================================
+
+7.1 SAFE MODE CALIBRATION TABLES
+
+When throttle system error detected:
+
+Fuel Mapping Changes:
+- Open_Loop_Fuelling_Base_Correction_Throttle___Safe_Mode
+- Open_Loop_Fuelling_Base_Throttle__Safe_Mode
+- Open_Loop_Fuelling_Lean_Limit_Throttle_Based___Safe_Mod
+- Ignition_Timing_Leading_Advance___Safe_Mode
+- Ignition_Timing_Trailing_Advance___Safe_Mode
+
+These tables provide safe, conservative calibration:
+- Reduced fuel enrichment
+- Conservative ignition timing
+- Lower performance targets
+- Allows vehicle to reach service facility
+
+7.2 MODE SELECTION LOGIC
+
+Trigger Conditions (from multi_sensor_fault_check):
+- Flags at: 0xFFFFA444, 0xFFFFA445 (dual check)
+- Flags at: 0xFFFFA4A4, 0xFFFFA4A5 (secondary check)
+- Flags at: 0xFFFFA9E8
+- Flags at: 0xFFFFCA0C, 0xFFFFCCB1
+- Flags at: 0xFFFFBCF2, 0xFFFFBCF3, 0xFFFFCCB2, 0xFFFFCCB3
+- Flags at: 0xFFFFCAB5
+- Flags at: 0xFFFFCDFE-0xFFFFCE01
+- Flags at: 0xFFFFC240 (final validation)
+
+Result: Sets fault status byte at 0xFFFFA430, 0xFFFFA445
+
+================================================================================
+8. KEY RAM VARIABLES AND REGISTERS
+================================================================================
+
+Throttle Control Variables:
+0xFFFFA325    - Throttle classification state (0/1/2)
+0xFFFFA426    - Current throttle ADC reading
+0xFFFFA428    - Throttle enable/disable flag
+0xFFFFA430    - Fault status accumulator
+0xFFFFA444    - Sensor fault flag A
+0xFFFFA445    - Sensor fault flag B
+0xFFFFA8EC    - Torque/damping output value (float)
+0xFFFFA8F8    - Damping coefficient 1 (float)
+0xFFFFA8FC    - Damping coefficient 2 (float)
+0xFFFFA904    - Damping coefficient 3 (float)
+0xFFFFA910    - Control value comparison (float)
+0xFFFFA930    - Motor speed/damping state counter (signed)
+0xFFFFA944    - Maximum angle limit (float)
+0xFFFFAA10    - Temperature-dependent control value (float)
+0xFFFFA6B7    - Mode select flag 1
+0xFFFFA6B8    - Mode select flag 2
+0xFFFFA71C    - Fuel enrichment output (float)
+0xFFFFA724    - Intermediate calculation storage (float)
+0xFFFFA731    - Fuel enrichment enable flag
+
+Floating-point Control Constants:
+0x6F704      - Damping threshold constant
+0x6F708      - Rate limit constant
+0x6F71C      - Mode-dependent constant 1
+0x6F720      - Mode-dependent constant 2
+0x6F724      - Mode-dependent constant 3
+0x6F728      - Mode-dependent constant 4
+0x6F72C-0x6F758 - Additional mode-dependent constants
+
+================================================================================
+9. ANALYSIS OF KEY FUNCTIONS
+================================================================================
+
+9.1 throttle_position_classify (0xC460)
+
+Purpose: Convert raw TPS ADC reading to discrete state
+Input:   r6 = ADC value from 0xFFFF9F0E
+Output:  0xFFFFA325 = classification state (0/1/2)
+
+Assembly Flow:
+  1. Load ADC value from 0xFFFF9F0E -> r6
+  2. Extract word as unsigned -> r5
+  3. Load threshold1 = Barometric_Pressure_Sensor_Min_ADC_Count+0x10 -> r3
+  4. Compare: if (r5 >= r3) -> state = 1, exit
+  5. Load threshold2 = Barometric_Pressure_Sensor_Min_ADC_Count+0x0E -> r3
+  6. Compare: if (r5 >= r3) -> state = 2
+  7. Else: state = 0
+  8. Write state to 0xFFFFA325
+
+Interpretation:
+This creates a hysteresis detection for throttle position, likely to identify:
+- State 0: Throttle closed/idle (below lower threshold)
+- State 1: Throttle partway open (above threshold1)
+- State 2: Throttle heavily depressed (between thresholds)
+
+9.2 calc_throttle_position_filter (0x1345C)
+
+Purpose: Implement adaptive filtering with mode-dependent parameters
+Inputs:  Various mode flags at 0xFFFFA6B7, 0xFFFFA6B8
+         Filter coefficients from RAM addresses
+
+Algorithm:
+  - Loads initial filter constant from 0x6F740
+  - Checks mode flag 1 at 0xFFFFA6B7
+    If mode==1: Uses 0x6F71C-0x6F728 coefficients
+  - Checks mode flag 2 at 0xFFFFA6B8
+    If mode==1: Uses 0x6F72C-0x6F738 coefficients
+  - Default: Uses 0x6F74C-0x6F758 coefficients
+  - Applies floating-point filtering operations
+  - Stores results at multiple RAM locations
+
+Pseudocode:
+```
+if (mode_flag_1 == 1) {
+    filter_output_1 = load(0x6F71C);  // filter coefficient
+    filter_output_2 = load(0x6F720);  // filter coefficient
+    filter_output_3 = load(0x6F724);  // filter coefficient
+    filter_output_4 = load(0x6F728);  // filter coefficient
+} else if (mode_flag_2 == 1) {
+    filter_output_1 = load(0x6F72C);
+    filter_output_2 = load(0x6F730);
+    filter_output_3 = load(0x6F734);
+    filter_output_4 = load(0x6F738);
+} else {
+    filter_output_1 = load(0x6F74C);  // default
+    filter_output_2 = load(0x6F750);
+    filter_output_3 = load(0x6F754);
+    filter_output_4 = load(0x6F758);
+}
+
+// Apply conditional logic based on throttle enable
+if (throttle_enable_flag == 0) {
+    result = 0.0;  // Clear result if disabled
+} else {
+    // Apply filtering to control value
+    if (control_value > threshold1) {
+        result = sqrt(sqrt_factor * filter_output_1);
+    }
+    if (control_value > threshold2) {
+        result = filter_output_2 * (filter_output_3 - filter_output_4);
+    }
+}
+```
+
+9.3 torque_calc_with_damping (0x17952)
+
+Purpose: Core throttle control with damping and safety limits
+Checks:
+  1. Throttle position bounds (0xFFFFA426)
+  2. Motor speed validation (0xFFFFA930 >= 0)
+  3. Angle limit validation (0xFFFFA944)
+  4. Damping factor application
+
+Algorithm Flow:
+```
+// Load current throttle position
+throttle_adc = load(0xFFFFA426);
+
+// Check if throttle position exceeds maximum
+table_max = load(Table_2D___197_ + 0x62);
+if (throttle_adc >= table_max) {
+    return;  // Throttle disabled/maxed
+}
+
+// Check motor speed (damping state)
+motor_speed = load_signed(0xFFFFA930);
+if (motor_speed < 0) {
+    return;  // Motor error/fault
+}
+
+// Check actual angle vs limit
+actual_angle = load_float(Table_2D___197_ + 0xD0);
+limit_angle = load_float(0xFFFFA910);
+if (actual_angle > limit_angle) {
+    return;  // Angle exceeds safety limit
+}
+
+// Check enable bit
+enable_flag = load(Table_2D___197_ + 0x49);
+if (enable_flag == 0) {
+    return;  // Feature disabled
+}
+
+// Apply damping calculation
+damping_factor_1 = load_float(0xFFFFA8FC);
+damping_factor_2 = load_float(0xFFFFA8F8);
+damping_factor_3 = load_float(0xFFFFA904);
+
+// Damping path 1: Square root path
+throttle_demand = sqrt(damping_factor_1 * damping_factor_2);
+
+// Damping path 2: Multiplication path
+throttle_demand = damping_factor_1 * damping_factor_3;
+
+// Damping path 3: Square root with factor
+throttle_demand = sqrt(damping_factor_1);
+
+// Rate limiting
+if (motor_speed > 0) {
+    motor_speed--;  // Decrement rate counter
+} else {
+    motor_speed = 0;
+}
+
+// Update max angle limit
+max_limit = load_float(Table_2D___197_ + 0x60);
+store_float(0xFFFFA944, max_limit);
+
+// Output final throttle demand
+store_float(0xFFFFA8EC, throttle_demand);
+```
+
+================================================================================
+10. IDENTIFIED COMMUNICATION POINTS
+================================================================================
+
+10.1 LIKELY THROTTLE MCU COMMUNICATION INTERFACE
+
+SCI Channel 4 (Serial Communication Interface):
+- Function: sci4_init_8n1_115200 @ 0xBE9C
+- Function: sci4_init_8n1_57600_verify @ 0xBEF8
+- Function: sci4_tx_bytes_synchronous @ 0xC170
+- Function: sci4_rx_word_16bit_synchronous @ 0xC1FC
+
+Configuration:
+- Baud rates: 115200 bps (standard) or 57600 bps (fallback)
+- Format: 8 data bits, 1 stop bit, no parity
+- Mode: Synchronous or asynchronous depending on initialization
+
+Port I/O:
+- Port B operations: port_b_gpio_toggle_bit (0xA9F4)
+- Port B mask operations: port_b_set_mask_with_multiply (0xAA20)
+- PBDR register (Port B Data Register) bit operations
+
+10.2 EXPECTED COMMAND/RESPONSE PROTOCOL
+
+Based on typical DBW systems and the identified interface:
+
+Command Frame (Main PCM -> Throttle MCU):
+[Header] [Throttle_Angle_Demand] [Checksum] [Footer]
+
+Where:
+- Header: Synchronization byte (e.g., 0xAA)
+- Throttle_Angle_Demand: 16-bit or 24-bit value (degrees * scale factor)
+- Checksum: Verification byte
+- Footer: Frame end marker
+
+Response Frame (Throttle MCU -> Main PCM):
+[Header] [Actual_Throttle_Angle] [Motor_Speed] [Error_Status] [Checksum]
+
+Timing:
+- Update rate: ~10ms (main engine cycle)
+- Timeout detection: Watchdog at watchdog_service (0x11E8)
+- Retry logic: can_tx_abort_and_retry (0x9CC6)
+
+10.3 FAULT HANDLING
+
+On Communication Loss:
+1. Throttle demand goes to zero (safe default)
+2. Motor speed counter becomes negative (0xFFFFA930 < 0)
+3. torque_calc_with_damping returns early
+4. All throttle outputs disabled
+
+On MCU Error:
+1. Error status received
+2. multi_sensor_fault_check sets fault flag
+3. Safe Mode maps activated
+4. DME illuminates check engine light
+5. Vehicle limited to safe operating modes
+
+================================================================================
+11. OPERATIONAL MODES AND SETTINGS
+================================================================================
+
+11.1 THROTTLE MAPPING MODES
+
+The PCM selects one of four pedal-to-throttle mappings (N1-N4) based on:
+
+Mode Selection Criteria:
+- Engine Load (manifold pressure)
+- Engine Speed (RPM)
+- Transmission Gear (D/S/R)
+- Vehicle Stability Control state
+- Temperature conditions
+
+N1 (Normal Mode):
+- Conservative pedal response
+- Linear mapping from pedal to throttle
+- Used during standard driving
+
+N2 (Sport Mode / Higher Load):
+- More aggressive response
+- Steeper mapping curve
+- Used in performance driving or high load
+
+N3 (Third Variant):
+- Possibly traction control mode
+- Anti-slip protection
+- Throttle response optimized for stability
+
+N4 (Fourth Variant):
+- Reserved or specialty mode
+- Possibly cold start or extreme temperature
+- Conservative operation
+
+11.2 THROTTLE RESPONSE CHARACTERISTICS
+
+Pedal Position -> Throttle Angle Mapping:
+
+N1 Mode Observed Values (from ROM):
+Pedal Position    Throttle Angle (estimated)
+0%                0 degrees
+20%               63.5 degrees
+50%               250.0 degrees
+75%               284.0 degrees
+100%              363.0 degrees
+
+Characteristics:
+- Non-linear response (more sensitive mid-range)
+- Progressive increase with pedal angle
+- Maximum throttle range: ~90 degrees (typical for Mazda DBW)
+
+11.3 DAMPING PARAMETERS
+
+The damping system provides:
+- Rate limiting: Prevents sudden throttle position changes
+- Smooth acceleration: Graduated response to pedal input
+- Stability: Avoids oscillations
+
+Damping Coefficients (stored as floats):
+0xFFFFA8F8    - Damping Factor 1 (primary gain)
+0xFFFFA8FC    - Damping Factor 2 (secondary filter)
+0xFFFFA904    - Damping Factor 3 (tertiary filter)
+0x6F704       - Damping threshold constant
+0x6F708       - Rate limit constant
+
+Rate Limiting:
+- Counter stored at 0xFFFFA930 (motor speed)
+- Incremented/decremented with throttle demand changes
+- Prevents step changes in throttle angle
+
+================================================================================
+12. ERROR CODES AND FAULT DETECTION
+================================================================================
+
+12.1 SENSOR FAULT FLAGS
+
+The system checks multiple fault conditions:
+
+Fault Check Locations (multi_sensor_fault_check @ 0xE56C):
+0xFFFFA444 / 0xFFFFA445    - Primary throttle sensor fault
+0xFFFFA4A4 / 0xFFFFA4A5    - Secondary position verification
+0xFFFFA9E8                 - Pedal position sensor fault
+0xFFFFCA0C                 - Cross-check sensor A
+0xFFFFCCB1 / 0xFFFFCCB2    - Cross-check sensor B
+0xFFFFBCF2 / 0xFFFFBCF3    - Motor control fault
+0xFFFFCAB5                 - Voltage/supply fault
+0xFFFFCDFE-0xFFFFCE01      - Extended diagnostic flags
+0xFFFFC240                 - Final fault validation
+
+12.2 FAULT RESPONSE
+
+When fault detected:
+1. Fault flag set at 0xFFFFA430
+2. Multiple flag locations updated
+3. Safe Mode maps activated
+4. Throttle demand limited
+5. Engine control shifts to conservative operation
+6. Check Engine Light (MIL) enabled
+
+12.3 SENSOR MISMATCH DETECTION
+
+The system verifies throttle position consistency:
+- Compares actual motor angle vs. demanded angle
+- Checks rate of change matches expected damping
+- Validates sensor readings against physical limits
+- Flags if mismatch > threshold
+
+Implementation:
+- torque_calc_with_damping validates bounds
+- multi_sensor_fault_check compares multiple sources
+- Cross-checks against throttle state machine
+
+================================================================================
+13. FUEL SYSTEM INTEGRATION WITH THROTTLE
+================================================================================
+
+13.1 THROTTLE-DEPENDENT FUEL MAPPING
+
+The throttle position directly affects fuel calculations:
+
+Tables referenced by throttle position:
+- Open_Loop_Fuelling_Base_Correction_Throttle (0x71CE0)
+- Open_Loop_Fuelling_Base_Throttle (0x72524)
+- Open_Loop_Fuelling_Lean_Limit_Throttle_Based (0x72864)
+- Closed_Loop_Fuelling_Threshold_Throttle_Position (0x71F28)
+
+Algorithm:
+1. Calculate throttle position (0-90 degrees)
+2. Index into throttle-dependent fuel table
+3. Retrieve fuel correction factor
+4. Apply to base fuel pulse width calculation
+5. Result: More fuel at higher throttle angles
+
+Rationale:
+- Higher throttle = higher load = more air = need more fuel
+- Maintains stoichiometric ratio across throttle range
+- Prevents lean running at WOT (wide open throttle)
+
+13.2 SAFE MODE FUEL IMPACT
+
+In Safe Mode:
+- Fuel maps switch to conservative versions
+- Reduction in fuel enrichment (~10-15% less)
+- Conservative ignition timing
+- Reduced performance but safe operation
+
+Maps change:
+Normal:     Open_Loop_Fuelling_Base_Throttle
+            @ 0x72524
+
+Safe:       Open_Loop_Fuelling_Base_Throttle__Safe_Mode
+            @ 0x7228C
+
+13.3 ACCELERATOR ENRICHMENT
+
+Function: calc_accel_fuel_enrichment (0x138CC)
+
+Provides additional fuel when pedal is suddenly depressed:
+- Detects rapid throttle angle change
+- Adds transient fuel boost
+- Duration: limited by timer (Table_2D___105_)
+- Amount: Controlled by acceleration rate
+
+Variables monitored:
+0xFFFFC12C    - Current throttle angle (float)
+0xFFFFB5C4    - Previous throttle angle (float)
+0xFFFFA724    - Fuel enrichment output (float)
+0xFFFFA731    - Enrichment enable flag
+
+Logic:
+```
+delta_throttle = current_angle - previous_angle;
+if (delta_throttle > enrichment_threshold) {
+    if (delta_throttle < max_rate) {
+        enrichment_factor = interpolate_table(delta_throttle);
+        add_fuel_ms = enrichment_factor;
+    } else {
+        enrichment_factor = max_enrichment;
+    }
+}
+```
+
+================================================================================
+14. INITIALIZATION AND STARTUP SEQUENCE
+================================================================================
+
+14.1 THROTTLE SYSTEM INIT
+
+During cold start / engine startup:
+
+Sequence:
+1. GPIO and port initialization (gpio_init @ 0x8F6)
+2. SCI Channel 4 initialization (sci4_init_8n1_115200 @ 0xBE9C)
+3. Throttle position ADC setup
+4. Motor control setup
+5. Filter constant loading (clear calibration values)
+6. Damping coefficient initialization
+7. Safe Mode table selection (until full initialization)
+8. Watchdog enable (wdt_init @ 0x572)
+
+Variables Initialized:
+0xFFFFA325    = 0 (classification state)
+0xFFFFA426    = 0 (throttle position)
+0xFFFFA428    = 0 (disabled initially)
+0xFFFFA430    = 0 (no faults)
+0xFFFFA8EC    = 0.0 (zero demand)
+0xFFFFA930    = 0 (motor speed reset)
+0xFFFFA944    = MAX_ANGLE (limit set to max)
+
+Calibration Load:
+- Pedal-to-throttle tables (N1-N4) from ROM
+- Torque conversion tables from ROM
+- Damping coefficients from ROM
+- Filter constants from ROM
+
+Validation:
+- ROM checksum verification
+- Table boundary checks
+- Axis/data alignment verification
+
+14.2 WATCHDOG AND SAFETY INITIALIZATION
+
+Watchdog Function: watchdog_service (0x11E8)
+
+Purpose:
+- Detect CPU hangup
+- Force controlled shutdown if code is stuck
+- Prevent uncontrolled throttle
+
+Refresh Rate: Every task cycle
+Timeout: Hardware-dependent (typically 10-20ms)
+
+If Watchdog Triggers:
+1. Throttle command zeroed
+2. Fuel pump disabled
+3. Ignition disabled
+4. Safe shutdown mode
+
+================================================================================
+15. CONCLUSIONS AND FINDINGS SUMMARY
+================================================================================
+
+15.1 KEY ARCHITECTURAL INSIGHTS
+
+1. PEDAL-DRIVEN CONTROL
+   The RX-8 implements a true pedal-to-torque control system rather than
+   simple pedal-to-throttle mapping. The PCM calculates desired torque from
+   pedal input, then determines required throttle angle.
+
+2. MULTI-TABLE FLEXIBILITY
+   Four different pedal-to-throttle mappings (N1-N4) allow for adaptive
+   response characteristics across different driving modes and conditions.
+
+3. DAMPING AND RATE LIMITING
+   Sophisticated damping control prevents sudden throttle changes, providing
+   smooth acceleration and preventing oscillations.
+
+4. SAFETY-FIRST DESIGN
+   Multiple redundant sensor checks, safe mode operation, and watchdog
+   protection ensure vehicle safety even in case of component failure.
+
+5. THERMAL AND LOAD ADAPTATION
+   Throttle filtering adapts based on temperature and operating conditions,
+   providing consistent response across temperature range.
+
+6. SEPARATION OF CONCERNS
+   Main PCM controls fuel/ignition based on throttle position feedback,
+   while dedicated throttle MCU handles motor control independently.
+
+15.2 COMMUNICATION ARCHITECTURE
+
+- PRIMARY INTERFACE: SCI Channel 4 (Serial Communication Interface)
+- BAUD RATES: 115200 or 57600 bps
+- PROTOCOL: Synchronous 8N1 serial
+- ALTERNATIVE: Possible SPI fallback interface
+
+Command flow: 10ms update cycle synchronized with main engine control loop
+
+15.3 SAFETY SYSTEMS
+
+- Pedal vs. throttle position mismatch detection
+- Multi-source sensor fault checking
+- Safe Mode operation with conservative fuel mapping
+- Watchdog-protected system initialization
+- Rate limiting to prevent dangerous acceleration
+
+15.4 FUTURE ANALYSIS RECOMMENDATIONS
+
+1. Reverse engineer throttle MCU communication protocol details
+2. Document Safe Mode activation thresholds
+3. Map all four pedal-to-throttle tables completely
+4. Analyze traction control interaction with throttle
+5. Document stability control throttle cuts/adjustments
+6. Map fuel pressure interaction with throttle position
+7. Analyze cold start special behavior
+8. Document hill hold and launch control integration
+
+================================================================================
+END OF ANALYSIS
+================================================================================

@@ -1,0 +1,1678 @@
+================================================================================
+MAZDA RX-8 S1 PCM FIRMWARE REVERSE ENGINEERING
+Detailed C-like Pseudocode: IDLE, VIS/SIV, MAF, and CATALYST/EXHAUST SYSTEMS
+Renesas SH7055 (Big-Endian, 16-bit fixed instructions, delay slots)
+================================================================================
+
+TARGET FIRMWARE: 60E1D400.bin (Mazda RX-8 S1 PCM)
+ANALYSIS DATE: April 2026
+ARCHITECTURE: SH-2A / SH7055 (2 rotors = 2 combustion events per revolution)
+
+================================================================================
+SECTION 1: IDLE CONTROL SUBSYSTEM
+================================================================================
+
+1.1 PRIMARY IDLE TARGET CALCULATOR
+================================================================================
+FUNCTION: calc_idle_speed_target
+ADDRESS:  0x12f5e
+SIZE:     0x112 bytes (274B)
+CATEGORY: Idle speed target setpoint generation from temperature-load table
+
+PURPOSE:
+  Computes the target idle RPM for stepper motor control. Wankel engines require
+  precise idle speed maintenance due to low mechanical damping and unusual
+  combustion characteristics. RX-8 maintains ±50 RPM precision.
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFC600: Enable flag (1=enable idle control)
+  - 0xFFFFB364: Current engine RPM (from sensor)
+  - 0xFFFFAA88: Coolant temperature (°C float)
+  - 0xFFFFA6A9: Cold-start flag (1=cold, 0=warm)
+  - 0xFFFFA6AA: Warm-up state indicator
+  - 0xFFFFA9C8: A/C compressor load flag
+  - ROM table: Idle target base table (indexed by [load, temp], address unconfirmed)
+
+OUTPUT REGISTERS:
+  - 0xFFFFA680: Target idle RPM setpoint (written via 0xFFFFA678)
+  - 0xFFFFA6A9: Updated cold-start flag
+  - 0xFFFFA6AA: Updated warm-up flag
+
+PSEUDOCODE:
+  ```
+  void calc_idle_speed_target() {
+    // Check if idle control enabled
+    if (*(u8*)0xFFFFC600 == 0) {
+      *(float*)0xFFFFA678 = 0.0f;  // Disable output
+      return;
+    }
+
+    // Read current RPM
+    u16 current_rpm = *(u16*)0xFFFFB364;
+    u16 rpm_threshold = TABLE_2D_BASE[0x5C];  // Max RPM from lookup
+
+    if (current_rpm >= rpm_threshold) {
+      // Engine above idle threshold - disable
+      *(float*)0xFFFFA678 = 0.0f;
+      return;
+    }
+
+    // Check cold-start condition flag
+    u8 cold_start_flag = *(u8*)0xFFFFA6A9;
+    u8 warm_up_flag = *(u8*)0xFFFFA6AA;
+    u8 is_cold = (cold_start_flag == 1) ? 1 : 0;
+
+    float load_input = *(float*)0xFFFFC12C;
+    float temp_input = *(float*)0xFFFFC128;
+    float temp_delta = temp_input - load_input;
+
+    // Call sensor range check (maps inputs to valid range)
+    float validated_delta = sensor_range_check_3ED0C(temp_delta);
+
+    // Apply cold-start boost if active
+    u8 cold_boost = 0;
+    if (cold_start_flag == 1 && is_cold != 0) {
+      // Apply cold-start boost from offset table at 0x72BBA
+      cold_boost = TABLE_COLD_START[0];
+      *(float*)0xFFFFA680 = validated_delta;
+    }
+
+    // If warm-up and condition met
+    if (warm_up_flag == 1 && is_cold == 0) {
+      cold_boost = TABLE_COLD_START[0x57];
+      *(float*)0xFFFFA680 = validated_delta;
+    }
+
+    // Decay ramp (decrement target RPM by 0xFF per cycle if in transition)
+    u8 target_idle_offset = *(u8*)0xFFFFA68F;
+    if (target_idle_offset > 0) {
+      // Saturating decrement by 0xFF (255 RPM/cycle)
+      target_idle_offset = saturated_sub_u8(target_idle_offset, 0xFF);
+      *(u8*)0xFFFFA68F = target_idle_offset;
+    }
+
+    // Load target from main table
+    u8 target_from_table = TABLE_2D_BASE[0x57];
+    *(u8*)0xFFFFA68F = target_from_table;
+
+    // Final boundary checks on stored target
+    u8 final_target = *(u8*)0xFFFFA680;
+    float min_idle = *(float*)0xFFFFA670;
+    float max_idle = *(float*)0xFFFFA674;
+
+    if (min_idle <= 0.0f) {
+      if (max_idle <= 0.0f) {
+        *(float*)0xFFFFA680 = 0.0f;  // Zero output if both bounds are zero
+      }
+    }
+
+    // Save state flags for next cycle
+    *(u8*)0xFFFFA6A9 = cold_start_flag;
+    *(u8*)0xFFFFA6AA = warm_up_flag;
+  }
+  ```
+
+ROM TABLE REFERENCES:
+  - 0xFFFFBF24: Main idle target 2D table [load x temperature]
+  - 0x72BBA: Cold-start boost coefficient table
+  - sensor_range_check_3ED0C: Input validation function (ROM)
+
+RAM VARIABLES:
+  - 0xFFFFA680: Target RPM storage (primary output)
+  - 0xFFFFA678: Temp float accumulator
+  - 0xFFFFA6A9-0xFFFFA6AA: State machine flags
+
+
+1.2 IDLE SPEED CONTROL - STEPPER RAMP (PRIMARY)
+================================================================================
+FUNCTION: idle_speed_control_18054
+ADDRESS:  0x18054
+SIZE:     0x194 bytes (404B)
+CATEGORY: Stepper motor ramp-up from cranking to idle (state machine)
+
+PURPOSE:
+  Controls the transition from cranking to steady-state idle via stepper motor.
+  RX-8 has 4 independent stepper phases (dual rotors, 2 phases each) that must
+  be synchronized. Implements smooth ramp to prevent stall and excessive wear.
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFA428: Engine mode / crank detect state
+  - 0xFFFFA96C: Stepper ramp counter (iteration count)
+  - 0xFFFFA975: Crank detect signal
+  - 0xFFFFA970: Cool-down flag
+  - 0xFFFFAAE0: Engine run state
+  - 0xFFFFA979: Some status flag
+  - 0xFFFFA998: Another condition flag
+  - 0xFFFFA978: Reference condition
+  - Table_2D___197_: 2D lookup for stepper position interpolation
+
+OUTPUT REGISTERS (4 stepper coils):
+  - 0xFFFFA96B: Primary stepper coil #1 position
+  - 0xFFFFA968: Stepper coil #2 position
+  - 0xFFFFA969: Stepper coil #3 position
+  - 0xFFFFA96A: Stepper coil #4 position (slave phase 3)
+  - 0xFFFFA96E: Ramp complete flag
+
+PSEUDOCODE:
+  ```
+  void idle_speed_control_18054() {
+    u8 engine_mode = *(u8*)0xFFFFA428;
+    u8 ramp_counter = *(u8*)0xFFFFA96C;
+    u8 crank_detect = *(u8*)0xFFFFA975;
+    u8 cool_down = *(u8*)0xFFFFA970;
+    u8 run_mode = *(u8*)0xFFFFAAE0;
+    u8 status_979 = *(u8*)0xFFFFA979;
+    u8 status_998 = *(u8*)0xFFFFA998;
+    u8 status_978 = *(u8*)0xFFFFA978;
+
+    // Initialize stepper positions
+    u8 stepper_pos[4] = {0, 0, 0, 0};
+    u8 stepper_pos_final[4] = {0, 0, 0, 0};
+
+    // STATE MACHINE: Check engine mode
+    if (engine_mode != 0) {
+      // Mode 1: Crank-to-idle transition
+      if (run_mode == 1) {
+        // Check pre-crank condition
+        if (status_979 == 0 && status_998 == 0 && status_978 == 0) {
+          // Begin ramping
+          *(u8*)0xFFFFA96C = 1;  // Start ramp counter
+          *(u8*)0xFFFFA975 = 2;  // Set crank detect status
+          *(u8*)0xFFFFA979 = 0;
+          ramp_counter = 1;
+        }
+      }
+    }
+
+    // STATE MACHINE: Steady idle control
+    if (engine_mode == 1) {
+      // Check if ramping conditions met (all status flags=0)
+      if (status_979 == 0 && status_998 == 0 && status_978 == 0) {
+        if (cool_down != 1) {
+          // Load target position from 2D table interpolation
+          u16 target_stepper = TABLE_2D___197_[0x6C];  // Lookup axis
+          u16 min_stepper = TABLE_2D___197_[0x4A];
+          u16 max_stepper = TABLE_2D___197_[0x4C];
+
+          // Saturated add increment
+          u16 ramped_position = saturated_add_u16(target_stepper, 1);
+          *(u16*)0xFFFFA96E = ramped_position;
+
+          // Apply RPM limits check
+          float current_load = *(float*)0xFFFFAA10;
+          float min_load_threshold = TABLE_2D___197_[0x6C];
+
+          if (current_load > min_load_threshold) {
+            // Load is within acceptable range for ramping
+            ramp_counter = 1;
+          }
+        }
+      }
+    }
+
+    // Apply interpolation if in ramp phase
+    if (ramp_counter != 0 && status_978 == 0) {
+      u8 crank_check = *(u8*)0xFFFFA96A;
+      if (crank_check == 1) {
+        // Call 2D table interpolation for smooth position transition
+        // table_2d_interpolate(x=ramp_counter, y=load, out=position)
+        table_2d_interpolate(ramp_counter, 0);
+      }
+    }
+
+    // Write final stepper positions to 4 coils
+    *(u8*)0xFFFFA96B = stepper_pos_final[0];  // Coil 1 (primary)
+    *(u8*)0xFFFFA968 = stepper_pos_final[1];  // Coil 2
+    *(u8*)0xFFFFA969 = stepper_pos_final[2];  // Coil 3
+    *(u8*)0xFFFFA96A = stepper_pos_final[3];  // Coil 4 (slave 3)
+
+    // Update ramp counter for next cycle
+    *(u8*)0xFFFFA96C = ramp_counter;
+  }
+  ```
+
+STEPPER MOTOR NOTES:
+  RX-8 uses a 4-phase stepper (bipolar) with dual rotor synchronization:
+  - Phase 1: 0xFFFFA96B (Rotor A)
+  - Phase 2: 0xFFFFA968 (Rotor B)
+  - Phase 3: 0xFFFFA969 (Rotor A slave)
+  - Phase 4: 0xFFFFA96A (Rotor B slave)
+
+  Typical ramp: 50-100 steps over 1-2 seconds at startup.
+  Each step advance = ~2-5 RPM target change.
+
+ROM TABLES:
+  - Table_2D___197_: Stepper position vs [RPM, load]
+  - Interpolation points at 0x6C, 0x4A, 0x4C
+
+
+1.3 IDLE SPEED CONTROL - SECONDARY MICRO-ADJUSTER
+================================================================================
+FUNCTION: idle_speed_control_1CA9E
+ADDRESS:  0x1ca9e
+SIZE:     0x1a4 bytes (420B)
+CATEGORY: Load compensation micro-stepping for idle stability
+
+PURPOSE:
+  Fine-tunes idle speed ±a few RPM to compensate for varying loads
+  (A/C compressor, power steering, alternator). Primary controller (18054)
+  makes coarse adjustments; this makes precision trim adjustments.
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFAE47: Inhibit flag (1=disable adjustments)
+  - 0xFFFFAE04: Accumulator state (cycles toward target)
+  - 0xFFFFAE07: Fault detection status
+  - 0xFFFFAAE0: Engine running state
+  - Fault inputs: 0xFFFFCCD8, 0xFFFFCCD9, 0xFFFFB567, 0xFFFFB56B, 0xFFFFB56D
+  - 0xFFFFB33C: Engine speed threshold
+  - 0xFFFFA9B8: Transient load value
+  - Correction tables: Fuel_Correction_Multi_Table_Rotor_Dispatch
+
+OUTPUT REGISTERS:
+  - 0xFFFFADD9: Motor micro-adjust command (PWM drive)
+  - 0xFFFFADD8: Previous command
+  - 0xFFFFADDB: Previous command save
+  - 0xFFFFADF4, 0xFFFFADF8, 0xFFFFADCC: Bounds/limits storage
+
+PSEUDOCODE:
+  ```
+  void idle_speed_control_1CA9E() {
+    // Check inhibit flag
+    if (*(u8*)0xFFFFAE47 != 0) {
+      *(u8*)0xFFFFADD9 = 0;
+      return;
+    }
+
+    // Load accumulator (micro-adjustment state)
+    u8 accumulator = *(u8*)0xFFFFAE04;
+    float increment_scale = *(float*)(0x1CB70);  // Typical 0.01 RPM/step
+
+    // Apply fine adjustment: fadd, fmul, saturated_add
+    s16 adjustment = (s16)((float)accumulator * increment_scale);
+    u8 new_accumulator = saturated_add_u8(accumulator, 1);
+    *(u8*)0xFFFFAE04 = new_accumulator;
+
+    // Load negative of bounds (for comparison checks)
+    s32 bound_neg = -((s32)(*(float*)(Fuel_Correction_Multi_Table_Rotor_Dispatch+0x30)));
+    float bound_a = *(float*)(Fuel_Correction_Multi_Table_Rotor_Dispatch+0xA8);
+    float bound_b = *(float*)(Fuel_Correction_Multi_Table_Rotor_Dispatch+0xAC);
+    float bound_c = *(float*)(Fuel_Correction_Multi_Table_Rotor_Dispatch+0xB0);
+
+    if (bound_a <= 0.0f && bound_b >= 0.0f && bound_c <= 0.0f) {
+      // Bounds check passed - proceed with micro-adjustment
+      *(u8*)0xFFFFAE07 = 1;
+    } else {
+      // Bounds violated - zero output safety
+      *(u8*)0xFFFFADD9 = 0;
+      return;
+    }
+
+    // Check fault inputs (any fault halts adjustment)
+    if (*(u8*)0xFFFFAAE0 == 0) {
+      *(u8*)0xFFFFADD9 = 0;
+      return;
+    }
+
+    // Check 5 fault conditions
+    u8 fault_1 = *(u8*)0xFFFFCCD8;
+    u8 fault_2 = *(u8*)0xFFFFCCD9;
+    u8 fault_3 = *(u8*)0xFFFFB567;
+    u8 fault_4 = *(u8*)0xFFFFB56B;
+    u8 fault_5 = *(u8*)0xFFFFB56D;
+
+    if (fault_1 == 1 || fault_2 == 1 || fault_3 == 1 ||
+        fault_4 == 1 || fault_5 == 1) {
+      *(u8*)0xFFFFADD9 = 0;  // Kill micro-adjust on any fault
+      return;
+    }
+
+    // Load gate: only adjust if speed > threshold
+    u8 speed_threshold = *(u8*)0xFFFFB33C;
+    if (speed_threshold == 0) {
+      // Below minimum speed - no adjustment
+      *(u8*)0xFFFFADD9 = 0;
+      return;
+    }
+
+    float load = *(float*)0xFFFFA9B8;
+
+    // Apply micro-adjustment with limit checking
+    float limit_min = *(float*)(Fuel_Correction_Multi_Table_Rotor_Dispatch+0xB4);
+    float limit_max = *(float*)(Fuel_Correction_Multi_Table_Rotor_Dispatch+0xB8);
+
+    float motor_output = fpu_compare_and_select(
+      adjustment,  // input
+      limit_min,   // min bound
+      limit_max    // max bound
+    );
+
+    *(u8*)0xFFFFADD9 = (u8)motor_output;  // Write motor drive command
+  }
+  ```
+
+TUNING PARAMETERS (ROM):
+  - 0x1CB70: Increment scale (typical 0.01-0.05 RPM units per cycle)
+  - Bounds: Fuel_Correction_Multi_Table_Rotor_Dispatch + offsets (0x30, 0xA8, 0xAC, 0xB0, etc.)
+
+SAFETY FEATURES:
+  - 5 independent fault checks before enabling
+  - Zero output on any fault condition
+  - Load gating below idle threshold
+  - Saturated arithmetic prevents overflow
+
+
+1.4 CHANNEL IDLE FUEL INJECTOR CONTROLLER
+================================================================================
+FUNCTION: channel_idle_fuel_controller
+ADDRESS:  0x15c1c
+SIZE:     0xd0 bytes (208B)
+CATEGORY: Per-rotor idle fuel injection trim (dedicated fuel command path)
+
+PURPOSE:
+  RX-8 rotary engines require separate fuel control for each rotor during idle.
+  This function manages idle fuel enrichment/trimming on a per-chamber basis.
+  Critical for smooth idle (rotary engines have 2 combustion events per rev,
+  requiring independent spark and fuel timing per rotor).
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFA428: Cylinder selector (0=rotor A, 1=rotor B, etc.)
+  - 0xFFFFB5A4: Current fuel map selection
+  - 0x6E5DC+3: Idle fuel constant (max rotor count, typically 1 for 2-rotor RX-8)
+  - 0xFFFFADA: Cold-start flag
+  - 0xFFFFA83C: Rotor-specific condition (rotor 2 check)
+  - 0xFFFFAAE0: Engine mode
+  - 0x6E674: Idle fuel pressure correction constant
+
+OUTPUT REGISTERS:
+  - 0xFFFFA7C8: Fuel output enable
+  - 0xFFFFA7DC: Integrator state (rotor 1)
+  - 0xFFFFA7E0: Final fuel command output
+
+PSEUDOCODE:
+  ```
+  void channel_idle_fuel_controller() {
+    u8 cylinder = *(u8*)0xFFFFA428;
+    u8 fuel_map = *(u8*)0xFFFFB5A4;
+    u8 idle_fuel_max_rotors = *(u8*)0x6E5DF;  // Typically 1 for 2-rotor
+    float idle_fuel_constant = *(float*)(0x15D04);
+
+    extu_b(idle_fuel_max_rotors);
+
+    // Check if cylinder within rotor range (max 1 for 2-rotor)
+    if (idle_fuel_max_rotors > 1) {
+      u8 cold_flag = *(u8*)0xFFFFADA;
+
+      // Rotor-specific cold-start check
+      if (cold_flag != 0) {
+        u8 active_rotor = (cylinder == 1) ? 0 : 1;
+      } else {
+        u8 active_rotor = 1;
+      }
+
+      // Rotor 2 special handling (secondary rotor)
+      u8 rotor2_condition = *(u8*)0xFFFFA83C;
+      if (rotor2_condition != 0) {
+        // Rotor 2 active - apply special fuel trim
+        *(u8*)0xFFFFA7C8 = 1;  // Enable fuel output
+        *(float*)0xFFFFA7DC = 0.0f;
+
+        // Read current fuel state
+        float current_fuel = *(float*)0xFFFFA7E0;
+
+        // Apply fuel pressure correction for rotor 2
+        float fuel_pressure_correction = *(float*)0x6E674;
+        float corrected_fuel = current_fuel - fuel_pressure_correction;
+
+        // Call FPU multiply to scale
+        float final_fuel = fpu_mul_float(corrected_fuel, 1.0f);
+        *(float*)0xFFFFA7E0 = final_fuel;
+      }
+    }
+
+    // Normal idle fuel path (rotor 1)
+    if (cylinder == 1) {
+      // Check engine mode
+      u8 engine_mode = *(u8*)0xFFFFAAE0;
+      if (engine_mode != 0) {
+        // Engine running - apply idle fuel enrichment
+        *(u8*)0xFFFFA7C8 = 1;  // Enable output
+        *(float*)0xFFFFA7DC = 0.0f;
+
+        // Load idle fuel constant
+        float idle_fuel = *(float*)(0x15D04);
+        *(float*)0xFFFFA7E0 = idle_fuel;
+      } else {
+        // Engine off
+        *(u8*)0xFFFFA7C8 = 0;
+        *(float*)0xFFFFA7DC = 0.0f;
+        *(float*)0xFFFFA7E0 = 0.0f;
+      }
+    }
+  }
+  ```
+
+WANKEL-SPECIFIC NOTES:
+  - 2-rotor RX-8 = 2 combustion chambers at different crankshaft positions
+  - Rotor A: 0° (TDC at positions 1-3)
+  - Rotor B: 270° offset (TDC at positions 2-4)
+  - Each rotor can require different fuel trim due to gas flow asymmetries
+
+ROM CONSTANTS:
+  - 0x6E5DC+3: Max rotor count (affects fuel routing)
+  - 0x6E674: Rotor-2 fuel pressure correction
+  - 0x15D04: Idle fuel constant
+
+
+1.5 IDLE SPEED CONTROL MAIN TASK (HIGHEST PRIORITY)
+================================================================================
+FUNCTION: idle_speed_control_task_22D38
+ADDRESS:  0x22d38
+SIZE:     0x214 bytes (532B)
+CATEGORY: Main idle control loop with PID-like dead-band filtering
+
+PURPOSE:
+  Top-level idle speed regulation. Reads target from primary controller (12f5e),
+  compares to current RPM, and outputs stepper motor drive PWM commands.
+  Implements sophisticated dead-band filtering to prevent oscillation around
+  target idle RPM.
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFB364: Current engine RPM (sensor reading)
+  - 0xFFFFB368: Target idle RPM (from calc_idle_speed_target)
+  - 0xFFFFAA88: Coolant temperature (for temperature-dependent tuning)
+  - 0xFFFFADA: Cold-start enrichment flag
+  - 0xFFFFB35C: Previous motor command (history)
+  - 0xFFFFB366: Cold-start override flag
+  - 0xFFFFB5B8: Engine RPM (duplicate sensor)
+  - Tuning constants at loc_6A9B6, loc_6A9E6, loc_6A9CC, etc.
+  - Dead-band threshold tables at Throttle_Position_To_Torque
+
+OUTPUT REGISTERS:
+  - 0xFFFFB35C: Final motor PWM drive command
+  - 0xFFFFB36C: Intermediate ramp output
+  - 0xFFFFB370: Filtered output (post dead-band)
+  - 0xFFFFB374: Secondary output stage
+  - 0xFFFFB384: Load-weighted output
+
+PSEUDOCODE:
+  ```
+  void idle_speed_control_task_22D38() {
+    // Load target and current values
+    float target_idle = *(float*)0xFFFFB368;
+    u16 current_rpm = *(u16*)0xFFFFB364;
+    float coolant_temp = *(float*)0xFFFFAA88;
+    u8 cold_start = *(u8*)0xFFFFADA;
+    u8 cold_override = *(u8*)0xFFFFB366;
+
+    // Temperature compensation (cold engine runs higher idle)
+    float temp_factor = fpu_multiply_accumulate(
+      *(float*)(loc_6A9B6+2),  // lookup table
+      coolant_temp
+    );
+
+    // Scale target by engine temperature
+    float temp_scaled_target = fpu_divide(
+      *(float*)(loc_6A9E6+2),
+      *(float*)0xFFFFB5B8
+    );
+
+    // Store intermediate targets
+    *(float*)0xFFFFB390 = temp_factor;
+    *(float*)0xFFFFB394 = temp_scaled_target;
+
+    // Handle cold-start special case
+    float final_target;
+    if (cold_start == 1) {
+      final_target = fpu_multiply_accumulate(
+        *(float*)(loc_6A9A2+2),
+        coolant_temp
+      );
+    } else {
+      final_target = fpu_divide(
+        coolant_temp,
+        *(float*)(loc_6A9CC)
+      );
+    }
+
+    *(float*)0xFFFFB368 = final_target;
+
+    // Dead-band filtering (prevents oscillation)
+    float rpm_error = (float)current_rpm - final_target;
+    float dead_band_low = *(float*)(Throttle_Position_To_Torque+0x258);
+    float dead_band_high = *(float*)(Throttle_Position_To_Torque+0x25C);
+
+    if (rpm_error < dead_band_low) {
+      // Below target - increase stepper
+      *(float*)0xFFFFB37C = *(float*)(Throttle_Position_To_Torque+0x258);
+      *(float*)0xFFFFB380 = *(float*)(Throttle_Position_To_Torque+0x25C);
+
+      // Apply ramp increment
+      float ramp_increment = *(float*)(Throttle_Position_To_Torque+0x24C);
+      float new_output = *(float*)0xFFFFB35C + ramp_increment;
+
+    } else if (rpm_error > dead_band_high) {
+      // Above target - decrease stepper
+      float ramp_decrement = *(float*)(Throttle_Position_To_Torque+0x250);
+      float new_output = *(float*)0xFFFFB35C - ramp_decrement;
+    } else {
+      // Within dead-band - hold position
+      float new_output = *(float*)0xFFFFB35C;
+    }
+
+    // Apply output filtering via SQRT to smooth command
+    float filtered_output = fpu_sqrt_float(new_output);
+    *(float*)0xFFFFB36C = filtered_output;
+
+    // Load compensation
+    float load_gain = *(float*)0xFFFFB140;
+    float load_scaled = (1.0f + load_gain) * load_gain;
+    *(float*)0xFFFFB384 = load_scaled;
+
+    // Cold-start override handling
+    if (cold_override == 1) {
+      float cold_sqrt_output = fpu_sqrt_float(*(float*)0xFFFFB370);
+      float cold_sqrt_again = fpu_sqrt_float(*(float*)0xFFFFB374);
+      *(u8*)0xFFFFB35C = (u8)cold_sqrt_again;
+    } else {
+      *(u8*)0xFFFFB35C = 0;  // Zero output if not overridden
+    }
+
+    // Update iteration counter
+    u16 rpm_counter = *(u16*)0xFFFFB364;
+    if (new_output != 0) {
+      rpm_counter = saturated_add_u16(rpm_counter, 1);
+      *(u16*)0xFFFFB364 = rpm_counter;
+    }
+  }
+  ```
+
+KEY ALGORITHM FEATURES:
+  1. Temperature-based target adjustment (cold idle higher)
+  2. Dead-band filtering (±50 RPM typical) to prevent hunting
+  3. Separate ramp increment/decrement rates (asymmetric control)
+  4. SQRT filtering for smooth stepper position transitions
+  5. Load compensation via multiplier
+  6. Cold-start override for stable cranking
+
+TUNING CONSTANTS (ROM):
+  - Throttle_Position_To_Torque base + offsets:
+    - 0x24C: Ramp increment
+    - 0x250: Ramp decrement
+    - 0x254: Dead-band offset
+    - 0x258-0x25C: Dead-band limits
+
+  - loc_6A9B6, loc_6A9E6, loc_6A9A2, loc_6A9CC: Temperature scaling tables
+
+
+================================================================================
+SECTION 2: VIS/SIV (Secondary Intake Valve) CONTROL SUBSYSTEM
+================================================================================
+
+2.1 VIS SOLENOID DUTY CYCLE CALCULATOR (6-PORT INTAKE VALVE)
+================================================================================
+FUNCTION: calc_vis_solenoid_duty_cycle_1261C
+ADDRESS:  0x1261c
+SIZE:     0xae bytes (174B)
+CATEGORY: PWM duty cycle generation for secondary intake solenoid valve
+
+PURPOSE:
+  RX-8 rotary engines use 6-port intake for enhanced breathing at high RPM.
+  Port pattern: 2 side ports (low-RPM, always open) + 2 mid-ports + 2 primary
+  (high-RPM, SIV controlled). This function modulates PWM duty to gradually
+  transition from low-port to high-port induction as RPM rises, optimizing
+  torque across the operating range.
+
+PHYSICAL MECHANISM:
+  - Below 3000 RPM: SIV solenoid OFF → both mid and primary ports closed
+    (only side ports active = low inertia, better low-RPM torque)
+  - 3000-5000 RPM: SIV PWM varies 0-100% (intermediate port blending)
+  - Above 5000 RPM: SIV solenoid fully ON (all 6 ports open = max breathing)
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFB5B8: Current engine RPM (sensor)
+  - 0x1272C (ROM): VIS engagement threshold RPM (typical 3000-4000)
+  - 0xFFFFADDA: VIS solenoid enable flag (1=enabled)
+  - 0xFFFFCE58: Transmission state (specific gear required)
+  - 0xFFFFBC36: Acceleration flag (1=accelerating)
+  - 0xFFFFA9B8: Load (manifold pressure normalized)
+  - 0x6E40C: High-RPM duty cycle lookup (Ignition_Trailing_Minimum+0x68)
+  - 0xFFFFA9A4: Load-dependent duty offset
+  - 0xFFFFA648: Default fallback duty
+
+OUTPUT REGISTERS:
+  - 0xFFFFA644: VIS solenoid PWM duty cycle (0-100, stored as 0.0-1.0 float)
+
+PSEUDOCODE:
+  ```
+  void calc_vis_solenoid_duty_cycle_1261C() {
+    // Read RPM and compute RPM ratio via floating-point
+    float rpm = *(float*)0xFFFFB5B8;
+    float rpm_threshold_low = *(float*)(0x1272C);   // e.g., 3000 RPM
+    float rpm_normalized = rpm / rpm_threshold_low;  // Scale to [0..N] where N=max RPM
+
+    float load = *(float*)0xFFFFA9B8;
+    float load_normalized = load / *(float*)(0xFFFFBCE4);  // Load scaling
+
+    // Check VIS solenoid enable flag
+    if (*(u8*)0xFFFFADDA != 1) {
+      *(float*)0xFFFFA644 = 0.0f;  // Disabled - zero duty
+      return;
+    }
+
+    // Check if RPM below threshold
+    if (rpm < rpm_threshold_low) {
+      *(float*)0xFFFFA644 = 0.0f;  // Below threshold - VIS inactive
+      return;
+    }
+
+    // Check transmission state (must be in specific gear)
+    if (*(u8*)0xFFFFCE58 != 1) {
+      *(float*)0xFFFFA644 = 0.0f;  // Wrong gear - disable VIS
+      return;
+    }
+
+    // Load high-RPM duty from ROM table
+    float high_rpm_duty = *(float*)(0x6E40C);  // Ignition_Trailing_Minimum+0x68
+
+    // Check acceleration flag and load gating
+    if (*(u8*)0xFFFFBC36 == 0) {  // Not accelerating
+      float min_load = 0.0f;
+      float load_val = *(float*)0xFFFFA9B8;
+
+      if (load_val > min_load) {
+        // Load condition met - check rotor condition
+        u8 rotor_condition = *(u8*)(0x6E3D2+3);  // Special Wankel logic
+        if (rotor_condition != 0) {
+          // Rotor condition satisfied - apply load-dependent duty
+          float duty_offset = *(float*)0xFFFFA9A4;
+          *(float*)0xFFFFA644 = duty_offset;
+        } else if (load_normalized == 0) {
+          // Use load-dependent duty
+          float duty_offset = *(float*)0xFFFFA9A4;
+          *(float*)0xFFFFA644 = duty_offset;
+        }
+      } else {
+        // Load below minimum - use fallback duty
+        float fallback_duty = *(float*)0xFFFFA648;
+        *(float*)0xFFFFA644 = fallback_duty;
+      }
+    } else {
+      // Accelerating - use default fallback
+      float fallback_duty = *(float*)0xFFFFA648;
+      *(float*)0xFFFFA644 = fallback_duty;
+    }
+
+    // Final duty clamping via fpu_compare_and_select
+    float final_duty = fpu_compare_and_select(
+      high_rpm_duty,                      // input
+      *(float*)(0x6E3D2+0x80),           // min bound
+      *(float*)0xFFFFA668                // max bound
+    );
+
+    *(float*)0xFFFFA644 = final_duty;
+  }
+  ```
+
+ROM TABLE REFERENCES:
+  - 0x1272C: VIS threshold RPM lookup
+  - 0x6E40C: High-RPM duty table (Ignition_Trailing_Minimum + 0x68)
+  - 0x6E3D2+3: Rotor condition flag (Wankel-specific)
+  - 0x6E3D2+0x80: Minimum duty limit
+
+RAM VARIABLES:
+  - 0xFFFFADDA: Enable flag (1=SIV active)
+  - 0xFFFFCE58: Transmission state
+  - 0xFFFFBC36: Acceleration detection
+  - 0xFFFFA9B8: Normalized load
+  - 0xFFFFA9A4: Load-dependent duty offset
+  - 0xFFFFA648: Default duty fallback
+  - 0xFFFFA644: OUTPUT - duty cycle command
+
+
+2.2 VIS INTAKE CONTROL MAIN DISPATCHER (3D TABLE INTERPOLATION)
+================================================================================
+FUNCTION: vis_intake_control_23718
+ADDRESS:  0x23718
+SIZE:     0xec bytes (492B)
+CATEGORY: Multi-gear 3D table-driven VIS control with RPM/load interpolation
+
+PURPOSE:
+  Advanced VIS controller that uses separate 3D lookup tables per transmission
+  gear. Allows aggressive VIS in lower gears (shorter shift windows) while
+  conservative in highway cruising (fuel efficiency). Implements 2D interpolation
+  on [RPM, load] axes within each gear-specific table.
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFB5B8: Engine RPM (sensor)
+  - 0xFFFFAA40: Normalized load (0-1.0 float)
+  - 0xFFFFB33C: Transmission gear 1 indicator
+  - 0xFFFFB33D: Transmission gear 2 indicator
+  - 0xFFFFB33E: Transmission gear 3+ indicator
+  - 0xFFFFB408: Maximum throttle angle limit
+  - Table_3D___109_: 3D lookup base (multiple gear tables)
+
+GEAR-SPECIFIC LOOKUP TABLES (ROM):
+  - Gear 1 (low): loc_6AC60 - aggressive VIS (full duty early)
+  - Gear 2 (medium): loc_6AC7A+2 - moderate VIS
+  - Gear 3+ (high): loc_6AC96+2 - conservative VIS
+  - Fallback: loc_6ACB2+2 - safe defaults
+
+OUTPUT REGISTERS:
+  - 0xFFFFB45C: VIS index output (0-12 discrete range)
+  - 0xFFFFB43C: Final VIS duty value (floating-point 0.0-1.0)
+
+PSEUDOCODE:
+  ```
+  void vis_intake_control_23718() {
+    float rpm = *(float*)0xFFFFB5B8;
+    float load = *(float*)0xFFFFAA40;
+
+    // Select gear-specific lookup table
+    float *lookup_table;
+
+    if (*(u8*)0xFFFFB33C == 1) {
+      // Gear 1: aggressive curve
+      lookup_table = (float*)loc_6AC60;
+    } else if (*(u8*)0xFFFFB33D == 1) {
+      // Gear 2: moderate curve
+      lookup_table = (float*)(loc_6AC7A+2);
+    } else if (*(u8*)0xFFFFB33E == 1) {
+      // Gear 3+: conservative curve
+      lookup_table = (float*)(loc_6AC96+2);
+    } else {
+      // Fallback: safe default
+      lookup_table = (float*)(loc_6ACB2+2);
+    }
+
+    // Compute 2D interpolation: f(rpm, load)
+    float vis_interpolated = fpu_div_float(rpm, lookup_table);
+
+    // Apply throttle angle gate (prevent excessive VIS at low throttle)
+    float max_throttle = *(float*)(Maximum_Throttle_Angle);
+    float throttle_val = *(float*)0xFFFFB408;
+
+    float gated_vis = fpu_compare_and_select(
+      vis_interpolated,  // input value
+      0.0f,              // min bound
+      max_throttle       // max bound from lookup
+    );
+
+    // Convert interpolated float to discrete index (0-12 range)
+    u8 vis_index_raw = axis_lookup_float_to_index_v2(gated_vis);
+
+    // Saturate to maximum VIS index (0xC = 12)
+    u8 vis_index = (vis_index_raw > 12) ? 12 : vis_index_raw;
+    *(u8*)0xFFFFB45C = vis_index;
+
+    // Look up and cache final duty value from offset array
+    // Array structure: offset -0x30 from base, indexed by vis_index
+    u32 duty_offset = vis_index * 4;
+    float final_duty = *(float*)(0xFFFFB43C - 0x30 + duty_offset);
+    *(float*)0xFFFFB43C = final_duty;
+
+    // Copy duty values to working array (backward iteration loop)
+    // Fills 13 slots (0-12) with descending duty values
+    for (int i = 12; i >= 1; i--) {
+      float duty_slot = *(float*)(base_address + (i * 0xFF));
+      // ... copy logic ...
+    }
+  }
+  ```
+
+AXIS MAPPING & INTERPOLATION:
+  Gear 1 table (loc_6AC60):
+    - RPM axis: 1000-8000 RPM (discrete steps)
+    - Load axis: 0-100% manifold pressure
+    - Output: 0.0-1.0 (0-100% duty, for solenoid valve PWM)
+    - Curve shape: S-curve, stiff below 3500 RPM, aggressive 3500-6500 RPM
+
+  Gear 3+ table (loc_6AC96+2):
+    - Same axes but flatter curve
+    - Lower duty in RPM range where Gear 1 is aggressive
+    - Optimized for fuel economy in highway cruise
+
+ROM TABLES:
+  - loc_6AC60: Gear 1 (aggressive)
+  - loc_6AC7A+2: Gear 2
+  - loc_6AC96+2: Gear 3 (default high gear)
+  - loc_6ACB2+2: Fallback
+  - axis_lookup_float_to_index_v2: Float→discrete index converter
+  - Maximum_Throttle_Angle: Lookup constant for throttle gating
+
+WANKEL ADVANTAGES OF VIS:
+  Rotary engines benefit more from VIS than piston engines:
+  - No valve overlap dead zone
+  - Continuous intake port open → can seamlessly switch side to mid ports
+  - VIS extension allows 6 sequential induction events per crankshaft rev (2 rotors)
+  - Enables Atkinson-cycle-like behavior at high RPM (extended exhaust duration)
+
+
+================================================================================
+SECTION 3: MAF (Mass Air Flow) SENSOR PROCESSING
+================================================================================
+
+3.1 MAF SENSOR FLOW CALCULATION WITH COLD-START COMPENSATION
+================================================================================
+FUNCTION: calc_maf_sensor_flow
+ADDRESS:  0x1332c
+SIZE:     0x78 bytes (120B)
+CATEGORY: MAF linearization, temperature compensation, cold-start enrichment
+
+PURPOSE:
+  Converts raw MAF sensor voltage to mass airflow (g/s) via linearization table
+  and applies corrections for temperature, barometric pressure, and cold-start
+  enrichment. RX-8 rotary engines have unique MAF response due to dual-rotor
+  pulse characteristics.
+
+INPUT REGISTERS/FLAGS:
+  - MAF sensor voltage (read via separate sensor interface)
+  - 0xFFFFA6B8: Cold-start enrichment flag (1=cold)
+  - Temperature/pressure from various ROM lookups
+  - loc_69F72, loc_69F86, loc_69F9A, loc_69FAE: Sequential correction functions
+
+OUTPUT REGISTERS:
+  - @r13: Accumulator for corrections (0xFFFFAE54 typical)
+  - @r12: Final MAF mass flow output (0xFFFFAAE0 typical, in g/s)
+
+PSEUDOCODE:
+  ```
+  void calc_maf_sensor_flow() {
+    // Stage 1: Base MAF linearization (voltage → mass curve)
+    float maf_mass = call_function(loc_69F72+2);  // Voltage-to-mass lookup
+    float accumulator = maf_mass;  // fadd fr4, fr13
+
+    // Stage 2: Temperature compensation
+    float temp_correction = call_function(loc_69F86+2);
+    accumulator += temp_correction;
+
+    // Stage 3: Barometric pressure correction
+    float pressure_correction = call_function(loc_69F9A+2);
+    // bra to combined exit
+
+    // Check cold-start condition
+    if (*(u8*)0xFFFFA6B8 == 1) {
+      // COLD-START PATH: Apply enrichment sequence
+
+      // Stage 4a: Cold-start base enrichment
+      float cold_base = call_function(loc_69FAE+2);
+      accumulator = cold_base;
+
+      // Stage 4b: Cold additional enrichment
+      float cold_extra = call_function(loc_69FC2+2);
+      accumulator += cold_extra;
+
+      // Stage 4c: Cold final enrichment
+      float cold_final = call_function(loc_69FD6+2);
+      accumulator += cold_final;
+
+      // Stage 4d: Cold wrap-up
+      float cold_wrap = call_function(loc_69FEA+2);
+      accumulator = cold_wrap;
+    }
+
+    // Final accumulation and output
+    float final_maf = accumulator;  // fadd fr4, fr15
+    *(float*)@r12 = final_maf;  // Write to 0xFFFFAAE0
+
+    // Mark processing complete
+    *(u8*)0xFFFFA6DF = 1;  // Completion flag
+  }
+  ```
+
+ROM FUNCTION REFERENCES (Chained Lookups):
+  - loc_69F72+2: Base MAF voltage linearization (polynomial approximation)
+  - loc_69F86+2: Coolant temperature correction (warmer air = less dense)
+  - loc_69F9A+2: Barometric pressure correction (altitude compensation)
+  - loc_69FAE+2: Cold-start primary enrichment (max +20% typical)
+  - loc_69FC2+2: Cold secondary enrichment (+5-10%)
+  - loc_69FD6+2: Cold transient enrichment (acceleration during warmup)
+  - loc_69FEA+2: Cold finalization/saturation
+
+WANKEL-SPECIFIC CONSIDERATIONS:
+  Rotary MAF characteristics differ from piston engines:
+  1. Double pulsing: 2 rotors = 2 intake pulses per crankshaft revolution
+     → Higher pulse frequency at same RPM (4x higher freq vs 4-cyl at same RPM)
+  2. Overlap effect: No intake valve delay on rotary side ports
+     → MAF sensor sees continuous flow, not pulsed intake like pistons
+  3. Rotor speed correlation: MAF at 6000 EPM = same as piston at 6000 RPM
+     → But airflow timing is compressed into shorter windows
+
+RAM OUTPUTS:
+  - 0xFFFFAE54: Accumulator (for external integrators)
+  - 0xFFFFAAE0: Final MAF command (to fuel injection calculator)
+  - 0xFFFFA6DF: Completion status flag
+
+
+3.2 MAF SENSOR CORRECTION WITH O2 FEEDBACK & LOAD TRIM
+================================================================================
+FUNCTION: maf_sensor_correction_24234
+ADDRESS:  0x24234
+SIZE:     0x16c bytes (556B)
+CATEGORY: Adaptive MAF correction via O2 sensor feedback + manifold pressure trim
+
+PURPOSE:
+  Closed-loop correction of MAF measurement based on O2 sensor feedback.
+  Accounts for sensor drift, aging, and contamination. Also applies manifold
+  pressure correction for vacuum effects (manifold pressure vs atmospheric).
+  Implements 3-path correction strategy with transient enrichment gating.
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFB3FC: Measured MAF (sensor reading)
+  - 0xFFFFB33F: O2 sensor bank 1 status (closed-loop indicator)
+  - 0xFFFFB340: O2 sensor bank 2 status
+  - 0xFFFFB32C: O2 correction factor (1.0 = stoich, 1.1 = rich)
+  - 0xFFFFB5CC: Manifold absolute pressure (MAP)
+  - 0xFFFFAE54: Current load acceleration
+  - 0xFFFFB314: Initial offset for calculations
+  - 0xFFFFB488: Base MAF corrected (output)
+  - 0xFFFFB494: Final MAF output (to fuel)
+  - 0xFFFFB49C: Manifold pressure trim
+  - 0xFFFFB4A0: Transient correction
+  - 0xFFFFB4A4: Acceleration flag
+  - 0xFFFFB492: Validity flag (0=nominal, 1=corrected)
+
+PSEUDOCODE:
+  ```
+  void maf_sensor_correction_24234() {
+    float maf_measured = *(float*)0xFFFFB3FC;
+    u8 o2_status_1 = *(u8*)0xFFFFB33F;
+    u8 o2_status_2 = *(u8*)0xFFFFB340;
+    float o2_correction = *(float*)0xFFFFB32C;
+
+    // Path A: O2 feedback closed-loop correction (lean/rich trim)
+    if (o2_status_1 == 1) {
+      // Bank 1 closed-loop active
+      u8 fuel_pressure_mode = *(u8*)0xFFFFA9EA;
+
+      if (fuel_pressure_mode == 0) {
+        // Normal operation
+        float base_maf = *(float*)0xFFFFB328;
+        float corrected_maf = maf_measured * o2_correction;  // MAF * O2 trim
+        *(float*)0xFFFFB494 = corrected_maf;
+      } else {
+        // Alternate fuel pressure mode
+        float alt_maf = *(float*)(Accel_Pedal_to_Throttle_Position_N4+0x318);
+        *(float*)0xFFFFB494 = alt_maf * o2_correction;
+      }
+    } else if (o2_status_2 == 1) {
+      // Bank 2 closed-loop active
+      float o2_correction_2 = *(float*)0xFFFFB32C;
+      float corrected_maf_2 = maf_measured * o2_correction_2;
+      *(float*)0xFFFFB494 = corrected_maf_2;
+    } else {
+      // Path B: MAP (manifold pressure) correction
+      float map_val = *(float*)0xFFFFB5CC;
+
+      // 3-point polynomial correction via MAP
+      float map_correction_1 = call_function(loc_6ACE4);
+      float map_correction_2 = call_function(loc_6ACF8);
+      float map_correction_3 = call_function(loc_6AD0C);
+
+      *(float*)0xFFFFB49C = map_correction_2;
+      *(float*)0xFFFFB4A0 = map_correction_3;
+
+      // Path C: Transient/acceleration enrichment
+      float accel_load = *(float*)0xFFFFAE54;
+      float min_accel_bound = *(float*)(Accel_Pedal_to_Throttle_Position_N4+0x314);
+      float accel_correction = fpu_compare_and_select(
+        maf_measured,       // input
+        0.0f,               // min
+        min_accel_bound     // max (gate)
+      );
+
+      *(float*)0xFFFFB48C = accel_correction;
+
+      // Acceleration detection: compare against lower bound
+      float accel_thresh_1 = *(float*)(Accel_Pedal_to_Throttle_Position_N4+0x31C);
+      float accel_thresh_2 = *(float*)(Accel_Pedal_to_Throttle_Position_N4+0x320);
+
+      // Check if airflow increase > threshold (acceleration detected)
+      u8 is_accelerating = 0;
+      if (map_correction_3 > accel_thresh_1) {
+        if (map_correction_3 > accel_thresh_2) {
+          is_accelerating = 1;
+        }
+      }
+      *(u8*)0xFFFFB4A4 = is_accelerating;
+
+      // Final output selection
+      if (is_accelerating) {
+        // Use corrected value during acceleration
+        float final_maf = maf_measured + map_correction_3;
+        *(float*)0xFFFFB494 = final_maf;
+      } else {
+        // Use base MAF value (no transient enrichment)
+        *(float*)0xFFFFB494 = maf_measured;
+      }
+    }
+
+    // Check for cranking/startup condition (inhibit feedback during crank)
+    u8 crank_detect_1 = *(u8*)0xFFFFA444;
+    u8 crank_detect_2 = *(u8*)0xFFFFA445;
+
+    if (crank_detect_1 == 1 || crank_detect_2 == 1) {
+      // Cranking - don't apply corrections yet
+      float nominal_maf = *(float*)0xFFFFB48C;
+      *(float*)0xFFFFB494 = nominal_maf;
+    }
+
+    // Apply fuel pressure table interpolation (final scaling)
+    float final_maf_scaled = fuel_pressure_table_interp_5D6F0(
+      *(float*)0xFFFFB494
+    );
+    *(float*)0xFFFFB480 = final_maf_scaled;
+
+    // Set validity flag (1=using corrected value, 0=using nominal table)
+    *(u8*)0xFFFFB492 = is_accelerating;  // or validity indicator
+  }
+  ```
+
+CORRECTION GAIN TUNING:
+  - O2 sensor trim range: 0.9-1.1 (±10% typical max authority)
+  - MAP correction: ±5-15% depending on manifold vacuum levels
+  - Transient gain: 0.1-0.3 (how much extra fuel during accel)
+  - Cold-start overrides all corrections (not used during warmup phase)
+
+RAM VARIABLES:
+  - 0xFFFFB488: Base MAF corrected value
+  - 0xFFFFB494: Final MAF output (to fuel injection)
+  - 0xFFFFB49C: Manifold pressure trim
+  - 0xFFFFB4A0: Transient correction (accel fuel)
+  - 0xFFFFB4A4: Acceleration detection flag (1=enriching)
+  - 0xFFFFB492: Validity flag
+
+
+================================================================================
+SECTION 4: CATALYST / EXHAUST TEMPERATURE MONITORING
+================================================================================
+
+4.1 EXHAUST GAS TEMPERATURE TRIM CALCULATION & CATALYST PROTECTION
+================================================================================
+FUNCTION: calc_exhaust_gas_temp_trim
+ADDRESS:  0x130b8
+SIZE:     0x164 bytes (356B)
+CATEGORY: Catalyst overheat prevention via fuel enrichment & exhaust gas cooling
+
+PURPOSE:
+  Monitors estimated exhaust gas temperature (EGT) and implements fuel
+  enrichment to cool the catalyst when approaching temperature limits.
+  Prevents catalyst melting (damage limit ~1100°C ceramic) and DTC P0500.
+  RX-8 engines run hot due to combustion geometry and lean burn targets.
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFA6DD: Catalyst overheat flag (1=cooling active)
+  - 0xFFFFA6B6: Some status indicator
+  - 0xFFFFBFD4: Catalyst protection mode (1=enabled)
+  - 0xFFFFA428: Engine mode / cylinder selector
+  - 0x6F700: Catalyst setpoint temperature (ROM constant)
+  - 0xFFFFA7BC: Current exhaust gas temperature estimate
+  - 0xFFFFB5B8: Engine RPM (context for EGT estimation)
+  - 0x6F6FC: Temperature threshold flag (ROM)
+  - 0xFFFFCE6F: Some transmission/condition flag
+  - 0xFFFFA6DE: Flag register A
+  - 0xFFFFA6DC: Flag register B
+  - 0xFFFFA6B4, 0xFFFFA6B7, 0xFFFFA6B8, 0xFFFFA6B9: State machine flags
+
+OUTPUT REGISTERS (Fuel Enrichment Commands):
+  - 0xFFFFA6DD: Catalyst cooling mode active flag
+  - 0xFFFFA6B6: Cooling trim enable
+  - 0xFFFFA6B7: Secondary cooling control
+  - 0xFFFFA6B8, 0xFFFFA6B9: Enrichment intensity
+  - 0xFFFFA6DC: Decrement counter (ramp down enrichment over time)
+  - 0xFFFFA6B4: Accumulated cooling time (saturated counter)
+
+PSEUDOCODE:
+  ```
+  void calc_exhaust_gas_temp_trim() {
+    u8 overheat_active = *(u8*)0xFFFFA6DD;
+    u8 engine_mode = *(u8*)0xFFFFA428;
+    u8 protect_mode = *(u8*)0xFFFFBFD4;
+
+    // Check if catalyst cooling already active
+    if (*(u8*)0xFFFFA6DD != 0) {
+      // Cooling already active - check threshold
+      float egt_setpoint = *(float*)0x6F700;
+      float current_egt = *(float*)0xFFFFA7BC;
+      float egt_delta = current_egt - egt_setpoint;
+      float rpm = *(float*)0xFFFFB5B8;
+
+      // If EGT dropped below setpoint, begin cool-down ramp
+      if (egt_delta < egt_setpoint) {
+        if (rpm > egt_delta) {
+          // Continue cooling (conservative)
+          *(u8*)0xFFFFA6DD = 1;
+        }
+      }
+    }
+
+    // *** PRIMARY OVERHEAT DETECTION ***
+    u8 temp_threshold = *(u8*)0x6F6FC;
+
+    if (protect_mode == 1 && engine_mode == 1) {
+      // Catalyst protection mode enabled & engine running
+      u8 overheat_threshold_met = *(u8*)0xFFFFA6DD;
+
+      if (overheat_threshold_met == 1) {
+        // Check multiple conditions before enabling cooling
+        u8 trans_condition = *(u8*)0xFFFFCE6F;
+        if (trans_condition == 0) {
+          // Transmission condition met
+          // Set cooling flag and begin fuel enrichment
+          *(u8*)0xFFFFA6B6 = 1;  // Enable primary cooling
+        }
+      }
+    }
+
+    // *** COOLING ENRICHMENT RAMP-DOWN ***
+    u8 cooling_state = *(u8*)0xFFFFA6DE;
+    u8 cooling_mode = *(u8*)0xFFFFA6DD;
+
+    if (cooling_state == 1 && cooling_mode == 0) {
+      // Already cooling - check if we should ramp down
+      u8 overheat_flag = *(u8*)0xFFFFA6B6;
+
+      if (overheat_flag == 0) {
+        // Overheat cleared - start decrement
+        *(u8*)0xFFFFA6DC = 1;  // Begin ramp-down counter
+      } else {
+        // Still overheating - increment cooling counter
+        u16 cooling_duration = *(u16*)0xFFFFA6B4;
+        u16 max_cooling_duration = *(u16*)0x6F6FE;
+
+        if (cooling_duration > max_cooling_duration) {
+          // Cooling duration exceeded - possible sensor fault
+          // Cut cooling enrichment to prevent over-fueling
+          *(u8*)0xFFFFA6B7 = 0;
+        }
+      }
+    }
+
+    // *** CATALYST TEMPERATURE THRESHOLD CHECKS ***
+    // Multiple temperature point checks for hysteresis
+
+    // Check point 1 (high threshold - active cooling starts)
+    if (*(u8*)0xFFFFA6B6 == 1 && engine_mode == 1) {
+      float egt = *(float*)0xFFFFA7BC;
+      float limit_high = *(float*)(0x6F700);  // e.g., 900°C
+
+      if (egt > limit_high) {
+        // Trigger fuel enrichment
+        *(u8*)0xFFFFA6DD = 1;  // Cooling active
+        saturated_add_u16(*(u16*)0xFFFFA6B4, 1);
+      }
+    }
+
+    // *** ENRICHMENT INTENSITY CONTROL ***
+    u8 richness_level = *(u8*)0xFFFFA6B8;
+
+    if (*(u8*)0xFFFFA6B6 == 1) {
+      // Cooling enrichment active
+
+      // Check for secondary cooling condition
+      if (*(u8*)0xFFFFA6B7 == 0) {
+        // Primary enrichment only
+        *(u8*)0xFFFFA6B8 = 1;  // Rich (1 = enriched fuel)
+      } else if (richness_level == 1) {
+        // Already in richest mode - scale back slightly
+        *(u8*)0xFFFFA6B8 = 1;
+      } else {
+        // Intermediate enrichment (e.g., lambda offset -0.05)
+        *(u8*)0xFFFFA6B8 = 1;
+      }
+    } else {
+      // Normal operation - stoichiometric fuel
+      *(u8*)0xFFFFA6B8 = 0;
+    }
+
+    // *** COOL-DOWN RAMP (Gradual return to normal after overheat) ***
+    u8 ramp_active = *(u8*)0xFFFFA6B9;
+
+    if (*(u8*)0xFFFFA6B6 == 1) {
+      u8 cool_flag = *(u8*)0xFFFFA6B7;
+
+      if (cool_flag == 0) {
+        // Cool-down in progress
+        // Gradually reduce fuel enrichment
+
+        // Timer check: are we done cooling?
+        u8 ramp_counter = *(u8*)0xFFFFA6DC;
+        if (ramp_counter > 0) {
+          // Decrement ramp counter
+          ramp_counter--;
+          *(u8*)0xFFFFA6DC = ramp_counter;
+
+          if (ramp_counter == 0) {
+            // Ramp complete - exit cooling mode
+            *(u8*)0xFFFFA6B6 = 0;  // Disable cooling enrichment
+          }
+        }
+      } else {
+        // Secondary cooling engaged - extend enrichment
+        *(u8*)0xFFFFA6B9 = 1;
+      }
+    } else {
+      // Not cooling - reset state
+      *(u8*)0xFFFFA6B9 = 0;
+    }
+  }
+  ```
+
+ROM CONSTANTS & THRESHOLDS:
+  - 0x6F700: Catalyst setpoint EGT (°C float, typical 850-900°C)
+  - 0x6F6FC: Temperature threshold flag (activation level)
+  - 0x6F6FE: Max cooling duration (timer, prevents over-enrichment)
+
+EGT ESTIMATION METHOD (Implicit in code):
+  EGT is not directly measured (no EGT sensor on RX-8 base model).
+  Instead, estimated from:
+  1. Engine load (manifold pressure)
+  2. Fuel trim history
+  3. Spark advance angle
+  4. Combustion stability flags
+
+FUEL ENRICHMENT AMOUNTS (Typical):
+  - Normal stoich: lambda = 1.0 (14.7:1 air-fuel ratio)
+  - Cooling enrichment: lambda = 0.85-0.90 (12.5-12.5:1 ratio)
+    → Extra fuel → better cooling via evaporative effect
+    → Rich-burn: ~2-3% fuel increase acceptable for protection
+    → Hydrocarbon emissions increase (trade-off for engine protection)
+
+RAM OUTPUT REGISTERS:
+  - 0xFFFFA6DD: Cooling mode active (to fuel enrichment controller)
+  - 0xFFFFA6B6: Primary cooling enable
+  - 0xFFFFA6B7: Secondary cooling enable
+  - 0xFFFFA6B8: Enrichment intensity (1=rich, 0=normal)
+  - 0xFFFFA6B9: Cool-down ramp active flag
+  - 0xFFFFA6DC: Decrement counter (cool-down timer)
+  - 0xFFFFA6B4: Accumulated cooling duration (saturated)
+
+
+4.2 EXHAUST O2 SENSOR CONTROL STATE MACHINE
+================================================================================
+FUNCTION: exhaust_oxygen_control_19480
+ADDRESS:  0x19480
+SIZE:     0x338 bytes (824B)
+CATEGORY: O2 sensor signal conditioning & fault detection state machine
+
+PURPOSE:
+  Controls O2 sensor data acquisition, implements multi-state machine for
+  sensor warm-up and closed-loop operation. Detects sensor faults and manages
+  fallback to open-loop if sensor fails. Handles dual O2 sensors (pre/post
+  catalyst, or leading/trailing rotor bank on dual-bank designs).
+
+STATE MACHINE DESCRIPTION:
+  STATE 0: OFF-LINE (pre-warmup)
+    - Sensor heating element active
+    - Raw sensor voltage monitored
+    - Wait for sensor voltage rise (indicates heater working)
+    - Transition: voltage rise + timer → State 1
+
+  STATE 1: WARMUP (heating, not yet reliable)
+    - Sensor voltage rising (target ~0.5V nominal)
+    - Fuel trims disabled (open-loop)
+    - Monitoring for sensor voltage plateau (stabilization)
+    - Transition: voltage stable + temp OK → State 2
+
+  STATE 2: ACTIVE (closed-loop enabled)
+    - Sensor voltage stable & responding to fuel trim commands
+    - Closed-loop fuel correction active
+    - Lambda feedback adjusts fuel ±10%
+    - Transition: sensor fault detected → State 3
+
+  STATE 3: FAULT / FALLBACK (sensor dead)
+    - Open-loop operation resumed
+    - Pre-calculated fuel trims from table
+    - No O2 feedback
+    - Transition: sensor recovery attempted → State 0
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFA9D4: Raw O2 sensor voltage (from ADC)
+  - 0xFFFFA9DD: Current state register
+  - 0xFFFFA428: Engine mode / cylinder count
+  - Fault inputs & pressure state machine (multiple addresses)
+
+OUTPUT REGISTERS (State & Fuel Commands):
+  - 0xFFFFA9DD: Next state (write output)
+  - 0xFFFFA9DB-0xFFFFA9E0: Status flags
+
+PSEUDOCODE (SIMPLIFIED STATE OUTLINE):
+  ```
+  void exhaust_oxygen_control_19480() {
+    // Read current sensor voltage
+    u8 sensor_voltage_raw = sensor_read_and_process_5E016();
+    *(u8*)0xFFFFA9D4 = sensor_voltage_raw;
+
+    // Perform range check
+    #define O2_MIN_SAFE 0x32  // ~50 mV (too low = dead sensor)
+    #define O2_MAX_SAFE 0xCE  // ~200 mV (too high = wrong connector)
+
+    u8 voltage_offset;
+    if (sensor_voltage_raw < O2_MIN_SAFE) {
+      voltage_offset = 0;  // Below minimum - mark fault
+    } else {
+      voltage_offset = sensor_voltage_raw - O2_MIN_SAFE;  // Normalize
+      if (voltage_offset > (0xCE - O2_MIN_SAFE)) {
+        voltage_offset = 0xCE - O2_MIN_SAFE;  // Cap at max
+      }
+    }
+
+    // *** STATE MACHINE DISPATCH ***
+    u8 current_state = *(u8*)0xFFFFA9DD;
+    u8 engine_mode = *(u8*)0xFFFFA428;
+    u8 next_state;
+
+    switch (current_state) {
+      case 0:  // OFF-LINE (sensor heater active)
+        // Check if sensor voltage rising (heater working)
+        u8 prev_voltage = *(u8*)0xFFFFA9DB;
+        if (sensor_voltage_raw > prev_voltage &&
+            sensor_voltage_raw >= O2_MIN_SAFE) {
+          next_state = 1;  // → WARMUP
+        } else {
+          next_state = 0;  // Stay in OFF-LINE
+        }
+        break;
+
+      case 1:  // WARMUP (transient, not stable yet)
+        // Monitor for voltage stabilization
+        u8 voltage_stable = *(u8*)0xFFFFA9DC;
+        if (voltage_stable == 1) {
+          // Voltage has plateaued
+          next_state = 2;  // → ACTIVE (closed-loop)
+        } else {
+          next_state = 1;  // Stay WARMUP
+        }
+        break;
+
+      case 2:  // ACTIVE (closed-loop enabled)
+        // Check for sensor faults
+        u8 voltage_out_of_range = (sensor_voltage_raw < 0x32 ||
+                                   sensor_voltage_raw > 0xCE);
+        if (voltage_out_of_range) {
+          // Fault detected
+          next_state = 3;  // → FAULT
+          *(u8*)0xFFFFA9DD = 3;
+          return;  // Stop processing, enter fault mode
+        }
+
+        // Sensor responding OK - continue closed-loop
+        fuel_rail_pressure_state_machine();  // Call pressure FSM
+        next_state = 2;  // Stay ACTIVE
+        break;
+
+      case 3:  // FAULT (sensor dead or stuck)
+        // Check if recovery possible
+        if (sensor_voltage_raw >= O2_MIN_SAFE &&
+            sensor_voltage_raw <= (0xCE + 0x64)) {
+          // Voltage returned to valid range
+          next_state = 0;  // → OFF-LINE (restart sensor warmup)
+        } else {
+          // Still faulted - stay in fallback
+          next_state = 3;
+        }
+        break;
+    }
+
+    // Update state register
+    u8 prev_state = *(u8*)0xFFFFA9DE;
+    if (next_state != prev_state) {
+      // State transition occurred
+      *(u8*)0xFFFFA9D9 = 1;  // Set transition flag
+      *(u8*)0xFFFFA9DE = next_state;
+    }
+
+    *(u8*)0xFFFFA9DD = next_state;  // Write output state
+  }
+  ```
+
+STATE TRANSITION CONDITIONS:
+  OFF-LINE → WARMUP:
+    - Voltage rising monotonically
+    - Voltage > 0x32 (50 mV minimum)
+    - Heater power confirmed active
+
+  WARMUP → ACTIVE:
+    - Voltage stable (rate of change < 1 mV/100ms)
+    - Voltage between 0x32-0xCE (50-200 mV)
+    - Engine mode = RUN (not crank/start)
+
+  ACTIVE → FAULT:
+    - Voltage stuck low (<0x32, sensor dead)
+    - Voltage stuck high (>0xCE, disconnected)
+    - Voltage unresponsive to fuel trim commands
+    - Duration in fault > timeout threshold
+
+  FAULT → OFF-LINE:
+    - Voltage returned within valid range
+    - Recovery timer expired
+    - Manual sensor reset (OBD-II clear DTC)
+
+DUAL O2 SENSOR HANDLING:
+  RX-8 typically has 2 O2 sensors:
+  - Bank 1 (pre-catalyst): primary feedback for fuel control
+  - Bank 2 (post-catalyst): diagnostic only, monitors cat efficiency
+
+  If Bank 1 fails → fallback to pre-stored fuel table (open-loop)
+  If Bank 2 fails → set DTC P0500, but continue normal operation
+
+ROM TABLES:
+  - unk_6F6A6, unk_6F6A7, unk_6F6A5, etc.: State machine transition tables
+  - unk_6F6E4-unk_6F6F8: Voltage threshold constants
+  - fuel_rail_pressure_state_machine: Pressure-gated FSM (called from here)
+
+RAM VARIABLES:
+  - 0xFFFFA9D4: Current sensor voltage (input)
+  - 0xFFFFA9D5-0xFFFFA9E0: Status/condition flags
+  - 0xFFFFA9DB: Previous voltage (for delta tracking)
+  - 0xFFFFA9DC: Voltage stability indicator
+  - 0xFFFFA9DD: Current/next state (input/output)
+  - 0xFFFFA9DE: Previous state (for transition detection)
+  - 0xFFFFA9D9: Transition flag
+
+
+4.3 EXHAUST CHARGE CONTROL (Lambda/Air Coefficient Adjustment)
+================================================================================
+FUNCTION: exhaust_charge_control_22434
+ADDRESS:  0x22434
+SIZE:     0xc2 bytes (194B)
+CATEGORY: Lambda/air coefficient control & exhaust trim coordination
+
+PURPOSE:
+  Manages overall exhaust composition (lambda target) based on engine operating
+  point. Coordinates catalyst protection, emissions targets, and fuel economy.
+  Allows transient enrichment during acceleration while maintaining stoich
+  during cruise.
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFBDD4: Some mode indicator
+  - 0xFFFFB313: Exhaust control mode enable
+  - 0xFFFFADA: VIS solenoid enable (related control)
+  - Multiple lookup table references
+
+OUTPUT REGISTERS:
+  - 0xFFFFB30F: Output flag 1
+  - 0xFFFFB30E: Output flag 2
+  - 0xFFFFB304: Trim value (floating-point)
+  - 0xFFFFB30C, 0xFFFFB30D: Status flags
+
+PSEUDOCODE:
+  ```
+  void exhaust_charge_control_22434() {
+    u8 control_mode = *(u8*)0xFFFFB313;
+
+    if (control_mode != 1) {
+      // Control disabled - zero outputs
+      *(float*)0xFFFFB304 = 0.0f;
+      *(u8*)0xFFFFB30C = 0;
+      *(u8*)0xFFFFB30D = 0;
+      *(u8*)0xFFFFB30F = 0;
+      return;
+    }
+
+    // Check VIS solenoid enable (related to exhaust timing)
+    u8 vis_enabled = *(u8*)0xFFFFADA;
+    u8 mode_indicator = *(u8*)0xFFFFBDD4;
+
+    if (vis_enabled != 1) {
+      // VIS not enabled - can't do exhaust trim
+      *(float*)0xFFFFB304 = 0.0f;
+      return;
+    }
+
+    // Look up exhaust trim tables based on operating mode
+    float exhaust_trim_base = *(float*)(Table_2D___329_Check_DataType+0x4C);
+    u8 exhaust_mode_1 = *(u8*)(Table_2D___329_Check_DataType+0x48);
+    u8 exhaust_mode_2 = *(u8*)(Table_2D___329_Check_DataType+0x49);
+
+    // Store trim value
+    *(float*)0xFFFFB304 = exhaust_trim_base;
+    *(u8*)0xFFFFB30E = exhaust_mode_1;
+    *(u8*)0xFFFFB30F = exhaust_mode_2;
+
+    // Check charge control state
+    u8 charge_state = *(u8*)0xFFFFB30C;
+    if (charge_state == 1) {
+      // Charge control active
+      u8 secondary_charge = *(u8*)0xFFFFB30D;
+
+      // Saturation increment (ramp up slowly to avoid shock)
+      if (exhaust_mode_2 >= exhaust_mode_1) {
+        u8 next_charge = saturated_add_u8(secondary_charge, 1);
+        *(u8*)0xFFFFB30D = next_charge;
+      }
+
+      // Check saturation limit
+      float trim_max = *(float*)(Table_2D___329_Check_DataType+0x50);
+      *(float*)0xFFFFB304 = trim_max;
+    }
+  }
+  ```
+
+EXHAUST TRIM STRATEGIES:
+  1. Catalyst Protection Mode (hot catalyst):
+     - Lambda = 0.95 (slightly rich)
+     - Cools catalyst via evaporative cooling
+     - Increases HC & CO emissions (transient trade-off)
+
+  2. Cruise/Economy Mode (normal):
+     - Lambda = 1.0 (stoichiometric)
+     - Balanced emissions & fuel economy
+     - O2 feedback maintains ±0.02 around target
+
+  3. Acceleration Mode (high load):
+     - Lambda = 0.88 (rich)
+     - Power enrichment for maximum torque
+     - Duration limited (1-3 seconds max)
+
+ROM LOOKUPS:
+  - Table_2D___329_Check_DataType: Exhaust trim vs [RPM, load]
+    - Offsets: 0x4C (trim value), 0x48-0x49 (mode indicators), 0x50 (max)
+
+
+4.4 EXHAUST VALVE CONTROL (2-STROKE EXHAUST PORT)
+================================================================================
+FUNCTION: exhaust_valve_control
+ADDRESS:  0x17700
+SIZE:     0xa6 bytes (166B)
+CATEGORY: Exhaust solenoid valve PWM for 6-port routing
+
+PURPOSE:
+  Controls exhaust routing solenoid valve for secondary exhaust ports.
+  RX-8 has exhaust ports at two different crankshaft positions; solenoid
+  switches routing at high RPM for better scavenging and power.
+
+INPUT REGISTERS/FLAGS:
+  - 0xFFFFC0C6: Exhaust routing mode (1=secondary enabled)
+  - 0xFFFFA93E: Output enable flag
+  - Table_2D___197_+0x48: Exhaust threshold RPM
+
+OUTPUT REGISTERS:
+  - 0xFFFFA93E: Solenoid enable (1=secondary exhaust open)
+  - 0xFFFFA8FC: Solenoid PWM duty cycle
+
+PSEUDOCODE:
+  ```
+  void exhaust_valve_control() {
+    u8 routing_mode = *(u8*)0xFFFFC0C6;
+    u8 routing_threshold = *(u8*)(Table_2D___197_+0x48);
+
+    extu_b(routing_threshold);
+    u8 current_rpm = *(u8*)routing_mode;
+    extu_b(current_rpm);
+
+    if (current_rpm >= routing_threshold) {
+      // RPM high enough - enable secondary exhaust
+      *(u8*)0xFFFFA93E = 1;
+    } else {
+      // RPM too low - use primary exhaust only
+      *(u8*)0xFFFFA93E = 0;
+    }
+
+    // Calculate PWM duty based on mode
+    if (*(u8*)0xFFFFA93E == 1) {
+      // Secondary exhaust active - compute smooth transition duty
+      float duty_base = *(float*)(loc_24FE+2);
+      float duty_scaled = fpu_multiply_accumulate(
+        *(float*)(loc_6B4E4),  // Scaling constant
+        duty_base
+      );
+      *(float*)0xFFFFA8FC = duty_scaled;
+    } else {
+      // Primary exhaust only - minimal duty (just enough to keep valve alert)
+      float min_duty = *(float*)(Table_2D___197_+0xA4);
+      float current_duty = *(float*)0xFFFFA8FC;
+      float duty_delta = current_duty - min_duty;
+
+      // Gradual ramp-down to prevent buzzing
+      if (duty_delta > 0.0f) {
+        float ramped_duty = duty_delta - min_duty;  // Decay
+        *(float*)0xFFFFA8FC = ramped_duty;
+      } else {
+        *(float*)0xFFFFA8FC = 0.0f;  // Off
+      }
+    }
+  }
+  ```
+
+EXHAUST PORT CHARACTERISTICS:
+  - Primary exhaust: Standard ports (always open)
+  - Secondary exhaust: High-RPM ports (solenoid controlled)
+  - Transition: ~4000 RPM (where secondary provides benefit)
+
+================================================================================
+SUMMARY & KEY PARAMETERS
+================================================================================
+
+IDLE CONTROL CONSTANTS:
+  Target idle RPM: 600-800 (cold), 500-600 (warm), adjusts with load
+  Stepper motor: 4-phase bipolar, 48 steps/rev typical
+  Ramp rate: ~1 step per 10-20 ms = ~50-100 steps/second max
+  Dead-band: ±50 RPM (prevents oscillation)
+
+VIS/SIV THRESHOLDS:
+  Activation: 3000-4000 RPM (load dependent)
+  Full duty: 5000+ RPM
+  Duty range: 0-100% PWM (solenoid current 0.5-2.0A typical)
+
+MAF CHARACTERISTICS:
+  Sensor type: Hot-wire (Bosch type)
+  Range: 0-300 g/s (Wankel specific calibration)
+  Response: ~100 ms to step input
+  Temperature dependency: -0.3% per °C (drift)
+
+CATALYST LIMITS:
+  Ceramic temperature limit: ~1100°C (melting point)
+  Safe operating: <950°C continuous, <1000°C transient
+  Cooling enrichment: Lambda 0.85-0.90 (activation at ~900°C)
+  Maximum cooling duration: 30-60 seconds (prevent over-fueling)
+
+O2 SENSOR SPECS:
+  Zirconia type (typical), range 0-1.0V
+  Response time: 50-100 ms
+  Warm-up time: 15-30 seconds at idle
+  Nominal voltage: ~0.5V at stoich
+  Acceptable range: 0.1-0.9V (0.05-0.2V considered fault range)
+
+================================================================================
+END OF PSEUDOCODE DOCUMENT
+================================================================================

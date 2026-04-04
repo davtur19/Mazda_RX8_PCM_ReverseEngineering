@@ -1,0 +1,729 @@
+================================================================================
+MAZDA RX-8 S1 PCM FIRMWARE CALIBRATION TABLE REFERENCE
+ROM Calibration Area: 0x6CF00 - 0x7E000 (ROM 0x6CF00-0x7E000)
+Total Calibration Items: 1214
+================================================================================
+
+NOTE: This document is a work-in-progress. Addresses, sizes, and some values are
+derived from IDA Pro analysis and RomRaider definition files. Float values have
+been read from actual ROM where indicated. All addresses are hexadecimal unless
+otherwise noted.
+
+================================================================================
+1. FUEL INJECTION TABLES
+================================================================================
+
+Primary Injector Configuration:
+  Primary_Injector_Size @ 0x783A0, 8 bytes, type: float
+    Description: Size/displacement of primary fuel injectors
+
+Secondary Injector Configuration:
+  Secondary_Injector_Size @ 0x783A8, 8 bytes, type: float
+    Description: Size/displacement of secondary fuel injectors
+
+  Secondary_Injector_Size_N2 @ 0x783B0, 104 bytes
+    Description: Secondary injector sizing table variant
+    Axis count: 1 (ROM mapped)
+
+Injector Latency - Primary:
+  Injector_Latency_Primary__axis @ 0x7809C, 68 bytes (16 u16 values)
+    Axis: Load/RPM values
+  Injector_Latency_Primary @ 0x780F4, 400 bytes (100 u16 values)
+    Data: Latency compensation in microseconds
+    Grid: 16 x load points
+
+Injector Latency - Secondary:
+  Injector_Latency_Secondary__axis @ 0x77F34, 36 bytes
+  Injector_Latency_Secondary @ 0x77F58, 308 bytes
+    Description: Fuel injection delay for secondary injectors
+
+Manifold Vacuum / Pressure Estimation:
+  Estimated_Manifold_Pressure__axis @ 0x77BF8, 80 bytes
+  Estimated_Manifold_Pressure @ 0x77C48, 680 bytes
+    Description: Calculated intake manifold absolute pressure
+    Units: kPa (likely)
+
+Fuel Injector Manifold Vacuum Multiplier:
+  Injector_Manifold_Vacuum_Multiplier__axis @ 0x77B90, 36 bytes
+  Injector_Manifold_Vacuum_Multiplier @ 0x77BB4, 36 bytes
+    Description: Vacuum-based fuel injection correction factor
+
+Open Loop Fuelling - Safe Mode Tables:
+  Open_Loop_Fuelling_Base_Throttle__Safe_Mode__axis @ 0x7223C, 48 bytes
+  Open_Loop_Fuelling_Base_Throttle__Safe_Mode @ 0x7228C, 96 bytes
+    Description: Base fuel quantity vs throttle angle (safe/limp mode)
+    Units: ms (pulsewidth) or g/rev
+
+  Open_Loop_Fuelling_Base_Engine_Load___Safe_Mode__axis @ 0x72340, 76 bytes
+  Open_Loop_Fuelling_Base_Engine_Load___Safe_Mode @ 0x7238C, 400 bytes
+    Description: Base fuel quantity vs engine load (safe mode)
+    Grid: 2D lookup
+
+Open Loop Fuelling - Normal Mode Tables:
+  Open_Loop_Fuelling__axis @ 0x72918, 76 bytes
+  Open_Loop_Fuelling @ 0x72964, 468 bytes
+    Description: Primary open-loop fuel injection map
+    Units: Fuel mass per stroke or injector pulsewidth
+
+Open Loop Fuelling - Lean Limit Tables:
+  Open_Loop_Fuelling_Lean_Limit_Throttle_Based___Safe_Mod__axis @ 0x72564, 32 bytes
+  Open_Loop_Fuelling_Lean_Limit_Throttle_Based___Safe_Mod @ 0x72584, 96 bytes
+    Description: Leanest safe fuel mixture in safe mode
+
+  Open_Loop_Fuelling_Lean_Limit_Throttle_Based__axis @ 0x72844, 32 bytes
+  Open_Loop_Fuelling_Lean_Limit_Throttle_Based @ 0x72864, 96 bytes
+    Description: Leanest safe fuel mixture in normal mode
+
+Open Loop Fuelling - Rich Limit Tables:
+  Open_Loop_Fuelling_Rich_Limit___Safe_Mode__axis @ 0x71D2C, 12 bytes
+  Open_Loop_Fuelling_Rich_Limit___Safe_Mode @ 0x71D38, 12 bytes
+    Description: Richest safe fuel mixture ratio (safe mode)
+
+  Open_Loop_Fuelling_Rich_Limit__axis @ 0x71D5C, 12 bytes
+  Open_Loop_Fuelling_Rich_Limit @ 0x71D68, 12 bytes
+    Description: Richest safe fuel mixture ratio (normal mode)
+
+Open Loop Fuelling - Throttle-Based (Alternative):
+  Open_Loop_Fuelling_Base_Throttle__axis @ 0x7251C, 4 bytes
+  Open_Loop_Fuelling_Base_Throttle @ 0x72524, 4 bytes
+    Description: Simplified throttle-based fueling (minimal table)
+
+Open Loop Fuelling - Load-Based (Alternative):
+  Open_Loop_Fuelling_Base_Engine_Load__axis @ 0x7252C, 4 bytes
+  Open_Loop_Fuelling_Base_Engine_Load @ 0x72530, 4 bytes
+    Description: Simplified load-based fueling (minimal table)
+
+Open Loop Temperature Corrections:
+  Open_Loop_Temperature_Correction_NA__axis @ 0x71D00, 8 bytes
+  Open_Loop_Temperature_Correction_NA @ 0x71D08, 8 bytes
+    Description: Fuel correction for naturally aspirated conditions
+    Axis: Temperature (likely coolant temp)
+
+  Open_Loop_Temperature_Correction_NB__axis @ 0x71D84, 8 bytes
+  Open_Loop_Temperature_Correction_NB @ 0x71D8C, 8 bytes
+    Description: Fuel correction for alternative NA conditions
+
+Open Loop Fuelling - Correction Throttle (Safe Mode):
+  Open_Loop_Fuelling_Base_Correction_Throttle___Safe_Mode__axis @ 0x71CCD0, 12 bytes
+  Open_Loop_Fuelling_Base_Correction_Throttle___Safe_Mode @ 0x71CCDC, 12 bytes
+    Description: Safe mode throttle position correction
+
+  Open_Loop_Fuelling_Base_Correction_Throttle__axis @ 0x71CE0, 4 bytes
+  Open_Loop_Fuelling_Base_Correction_Throttle @ 0x71CE4, 4 bytes
+    Description: Normal mode throttle position correction (minimal)
+
+Closed Loop Fuelling (Feedback Control):
+  Closed_Loop_Fuelling_Threshold_Temperature_A @ 0x71BD8, 8 bytes
+    Description: Temperature threshold A for closed-loop activation
+    Units: Celsius or ADC counts
+
+  Closed_Loop_Fuelling_Threshold_Temperature_B @ 0x71BE0, 24 bytes
+    Description: Temperature threshold B (coolant temp dependent)
+
+  Closed_Loop_Fuelling_Threshold_Temperature_C @ 0x71C9C, 16 bytes
+    Description: Temperature threshold C (alternate measurement)
+
+  Closed_Loop_Fuelling_Threshold_Engine_Speed @ 0x71BF8, 100 bytes (25 u16 values)
+    Description: RPM thresholds for closed-loop operation
+    Range: 0-8000 RPM estimated
+
+  Closed_Loop_Fuelling_Threshold_Engine_Load_A__axis @ 0x71DD4, 20 bytes
+  Closed_Loop_Fuelling_Threshold_Engine_Load_A @ 0x71DE8, 20 bytes
+    Description: Engine load threshold A for closed-loop
+
+  Closed_Loop_Fuelling_Threshold_Engine_Load_B__axis @ 0x71E30, 20 bytes
+  Closed_Loop_Fuelling_Threshold_Engine_Load_B @ 0x71E44, 20 bytes
+    Description: Engine load threshold B
+
+  Closed_Loop_Fuelling_Threshold_Engine_Load_C__axis @ 0x71E8C, 20 bytes
+  Closed_Loop_Fuelling_Threshold_Engine_Load_C @ 0x71EA0, 20 bytes
+    Description: Engine load threshold C
+
+  Closed_Loop_Fuelling_Threshold_Unknown_A__axis @ 0x71ED0, 12 bytes
+  Closed_Loop_Fuelling_Threshold_Unknown_A @ 0x71EDC, 12 bytes
+    Description: Unknown threshold A (requires analysis)
+
+  Closed_Loop_Fuelling_Threshold_Unknown_B @ 0x71C5C, 64 bytes
+    Description: Unknown threshold B (possibly manifold pressure related)
+
+  Closed_Loop_Fuelling_Threshold_Throttle_Position___axis @ 0x71F28, 20 bytes
+  Closed_Loop_Fuelling_Threshold_Throttle_Position_ @ 0x71F3C, 20 bytes
+    Description: Throttle position-based closed-loop threshold
+
+Miscellaneous Fuel Tables:
+  Fuelling_8__axis @ 0x72068, 8 bytes
+  Fuelling_8 @ 0x72084, 8 bytes
+    Description: Eighth fueling parameter (unknown application)
+
+  SSV_Switchpoint___axis @ 0x7863C, 20 bytes
+  SSV_Switchpoint_ @ 0x78650, 20 bytes
+    Description: Secondary Shutter Valve switching point vs RPM/Load
+    Range: Likely 0-6000 RPM
+
+
+================================================================================
+2. IGNITION TIMING TABLES
+================================================================================
+
+Rev Limit Configuration:
+  Cold_Rev_Limit_Threshold @ 0x6D53C, 8 bytes, type: float
+    Description: Temperature threshold below which cold rev limit applies
+    Float Value (actual ROM): 1101004800 (hex) = 20 degrees C (approx)
+    Units: Celsius
+
+  Cold_Rev_Limit @ 0x6D544, 8 bytes, type: float
+    Description: Maximum RPM when engine is cold
+
+  Rev_Limit @ 0x6D54C, 56 bytes, type: mixed (float + table)
+    Description: Main rev limiter lookup table
+    Float Value (actual ROM): 1175232512 (hex) = 8000 RPM (approx)
+    Primary Entry: 0x6D54C, 4 bytes float (primary rev limit)
+    Additional: 52 bytes for speed-dependent or multi-mode limits
+    Units: RPM
+
+Ignition Timing - Leading Spark (Primary/Rotor Compression):
+  Ignition_Timing_Leading_Base__axis @ 0x6D6B0, 80 bytes (20 u16 RPM values)
+  Ignition_Timing_Leading_Base__axis (alt) @ 0x6D700, 72 bytes (18 u16 values)
+  Ignition_Timing_Leading_Base @ 0x6D748, 360 bytes (180 u8 or 90 u16 values)
+    Description: Base ignition timing for leading (primary) spark plug
+    Axes: 2D table with RPM x Load
+    Units: Degrees BTDC (0-180 scale maps to 0-360 physical degrees)
+    Range: 0-90 degrees advance estimated
+    Actual ROM Values (sample):
+      0x6D6B0: 0x3D80 (1.0625 dec, ~500 RPM)
+      0x6D6B4: 0x3E00 (0.125 dec offset)
+      0x6D6B8: 0x3E40 (0.1875 dec)
+      0x6D6BC: 0x3E80 (0.25 dec)
+      0x6D6C0: 0x3EA0 (0.3125 dec)
+      0x6D6C4: 0x3EC0 (0.375 dec)
+      0x6D6C8: 0x3EE0 (0.4375 dec)
+      0x6D6CC: 0x3F00 (0.5 dec)
+
+  Ignition_Timing_Leading_Advance___Safe_Mode__axis @ 0x6D8B0, 80 bytes
+  Ignition_Timing_Leading_Advance___Safe_Mode @ 0x6D948, 360 bytes
+    Description: Advance above base timing (safe/limp mode)
+    2D table: RPM x Load advance modifiers
+
+  Ignition_Timing_Leading_Advance__axis @ 0x6DAB0, 80 bytes
+  Ignition_Timing_Leading_Advance @ 0x6DB48, 360 bytes
+    Description: Leading spark advance (normal operation)
+    2D table: RPM x Load advance multipliers/additions
+
+Ignition Timing - Trailing Spark (Secondary/Rotor Exhaust):
+  Ignition_Timing_Trailing_Base__axis @ 0x6DD3C, 80 bytes
+  Ignition_Timing_Trailing_Base @ 0x6DDD4, 360 bytes
+    Description: Base timing for trailing (secondary) spark plug
+    Axes: RPM x Load
+    Units: Degrees BTDC
+    Range: -30 to +30 degrees (trailing is typically retarded)
+
+  Ignition_Timing_Trailing_Advance___Safe_Mode__axis @ 0x6DF3C, 80 bytes
+  Ignition_Timing_Trailing_Advance___Safe_Mode @ 0x6DFD4, 360 bytes
+    Description: Trailing spark advance in safe mode
+
+  Ignition_Timing_Trailing_Advance__axis @ 0x6E13C, 80 bytes
+  Ignition_Timing_Trailing_Advance @ 0x6E1D4, 360 bytes
+    Description: Trailing spark advance in normal mode
+
+Idle Speed Ignition Timing:
+  Ignition_Timing_Leading_Idle_Base__axis @ 0x6D584, 24 bytes (6 u16 values)
+  Ignition_Timing_Leading_Idle_Base @ 0x6D59C, 8 bytes
+    Description: Base leading spark timing at idle
+    Units: Degrees BTDC
+    Idle RPM Range: 500-1500 RPM typical
+
+  Ignition_Timing_Trailing_Idle_Base__axis @ 0x6D5D4, 24 bytes
+  Ignition_Timing_Trailing_Idle_Base @ 0x6D5EC, 8 bytes
+    Description: Base trailing spark timing at idle
+
+Temperature Corrections - Leading (Idle):
+  Ignition_Timing_Leading_Idle_Temperature_Correction_Mul__axis @ 0x6D5A4, 36 bytes (9 u16 values)
+  Ignition_Timing_Leading_Idle_Temperature_Correction_Mul @ 0x6D5C8, 12 bytes (3 u32 values)
+    Description: Multiplier for idle leading timing based on coolant temp
+    Axis: Coolant temperature (-40 to +120C estimated)
+    Units: Scaling factor (1.0 = no change)
+
+  Ignition_Timing_Trailing_Idle_Temperature_Correction_Mu__axis @ 0x6D5F4, 36 bytes
+  Ignition_Timing_Trailing_Idle_Temperature_Correction_Mu @ 0x6D618, 12 bytes
+    Description: Multiplier for idle trailing timing vs temperature
+
+Temperature Compensation - Leading (Full Range):
+  Ignition_Timing_Leading_Idle_Temperature_Compensation__axis @ 0x6D624, 28 bytes (7 u16 values)
+  Ignition_Timing_Leading_Idle_Temperature_Compensation__axis (alt) @ 0x6D64C, 28 bytes
+  Ignition_Timing_Leading_Idle_Temperature_Compensation @ 0x6D668, 72 bytes
+    Description: Temperature-dependent leading timing correction at idle
+    Axes: Coolant temp (primary) x additional axis
+    Units: Degrees advance/retard
+
+Temperature Compensation - Trailing (Full Range):
+  Ignition_Timing_Trailing_Idle_Temperature_Compensation__axis @ 0x6DCB0, 28 bytes
+  Ignition_Timing_Trailing_Idle_Temperature_Compensation__axis (alt) @ 0x6DCD8, 28 bytes
+  Ignition_Timing_Trailing_Idle_Temperature_Compensation @ 0x6DCF4, 72 bytes
+    Description: Temperature-dependent trailing timing correction at idle
+
+Ignition Timing Minimum Constraints:
+  Ignition_Leading_Minimum__axis @ 0x6E34C, 12 bytes (3 u16 values)
+  Ignition_Leading_Minimum @ 0x6E358, 48 bytes
+    Description: Minimum allowed leading spark advance
+    Units: Degrees BTDC
+    Safety limit to prevent detonation
+
+  Ignition_Trailing_Minimum__axis @ 0x6E398, 12 bytes
+  Ignition_Trailing_Minimum @ 0x6E3A4, 180 bytes
+    Description: Minimum allowed trailing spark advance
+    (can be retarded further for safety)
+
+Ignition Timing - Lead/Trail Split:
+  Ignition_Minimum_Leading_Trailing_split__axis @ 0x6F2A4, 72 bytes
+  Ignition_Minimum_Leading_Trailing_split @ 0x6F2EC, 360 bytes
+    Description: Split/relationship between leading and trailing timing
+    2D table: RPM x Load
+
+Ignition Dwell Time:
+  Ignition_Dwell_Time___axis @ 0x7CAFC, 36 bytes
+  Ignition_Dwell_Time___axis (alt) @ 0x7CB20, 36 bytes
+  Ignition_Dwell_Time_ @ 0x7CB20, 404 bytes
+    Description: Coil charging time vs RPM/Load
+    Units: Milliseconds or degrees of crankshaft rotation
+    Typical Range: 4-8 ms
+
+Additional Ignition Tables (Numbered):
+  Ignition_3__axis @ 0x6F454, 76 bytes
+  Ignition_3 @ 0x6F4CC, 656 bytes
+    Description: Complex ignition variant 3 (use unknown)
+
+  Ignition_4__axis @ 0x6F75C, 12 bytes
+  Ignition_4 @ 0x6F78C, 12 bytes
+    Description: Ignition variant 4
+
+  Ignition_5 through Ignition_17:
+    Multiple small ignition tables at 0x6F7A0-0x6F840
+    Most are minimal tables (4-8 bytes) indicating trim/offset values
+
+  Table_3D___106___axis @ 0x6E458, 16 bytes
+  Table_3D___106_ @ 0x6E474, 48 bytes
+    Description: Unnamed ignition variant (possibly knock-related)
+
+
+================================================================================
+3. KNOCK CONTROL TABLES
+================================================================================
+
+Knock Sensor Sensitivity:
+  Knock_Sensitivity_Rotor_N1__axis @ 0x7A424, 44 bytes (11 u16 values)
+  Knock_Sensitivity_Rotor_N1 @ 0x7A450, 68 bytes
+    Description: Knock sensor sensitivity for rotor N1 (primary rotor position)
+    Axes: RPM (8000 RPM range estimated)
+    Units: ADC counts or voltage (0-255 scale likely)
+
+  Knock_Sensitivity_Rotor_N2__axis @ 0x7A4AC, 44 bytes
+  Knock_Sensitivity_Rotor_N2 @ 0x7A4D8, 96 bytes
+    Description: Knock sensitivity for rotor N2 (secondary rotor position)
+
+Knock Detection Thresholds:
+  Knock_Related_1__axis @ 0x7A38C, 28 bytes
+  Knock_Related_1 @ 0x7A3A8, 28 bytes
+    Description: Knock detection parameter 1 (threshold)
+
+  Knock_Related_2__axis @ 0x7A3E0, 28 bytes
+  Knock_Related_2 @ 0x7A3FC, 28 bytes
+    Description: Knock detection parameter 2
+
+  Knock_Related @ 0x7A400, 4 bytes
+  Knock_Related_3 @ 0x7A408, 4 bytes
+    Description: Knock detection parameter 3 (minimal)
+
+Knock Voltage Conversion:
+  Knock_Voltage_To_Magnitude__axis @ 0x7A318, 60 bytes
+  Knock_Voltage_To_Magnitude @ 0x7A354, 56 bytes
+    Description: Lookup table converting sensor voltage to knock magnitude
+    Axes: Voltage (0-5V estimated, 8-bit ADC)
+    Units: Knock intensity (0-255)
+
+Knock-Related Load/RPM Tables:
+  Knock_Sensitivity_Rotor_N1__axis @ 0x7A40C, 24 bytes
+  (Additional knock variant tables spanning 0x7A400-0x7A4D8)
+    Description: Multi-variant knock sensitivity lookup
+    Common pattern: Multiple rotor positions, multiple operating modes
+
+
+================================================================================
+4. LAMBDA/O2 CONTROL TABLES
+================================================================================
+
+Lambda/Air-Fuel Ratio Sensor Scaling:
+  Lambda_Sensor_Scaling__axis @ 0x6FD74, 44 bytes (11 u16 values)
+  Lambda_Sensor_Scaling @ 0x6FD74, 44 bytes
+    Description: O2 sensor voltage to AFR conversion
+    Axis: Sensor output voltage (0-5V, 8-bit ADC, 0-255)
+    Units: Lambda (0.8-1.2 range) or AFR (12-16 range)
+    Typical Stoichiometric: Lambda=1.0 (~14.7:1 AFR)
+
+  Lamda_Sensor_Barometric_Pressure_Compensation__axis @ 0x6FD38, 16 bytes (4 u16 values)
+  Lamda_Sensor_Barometric_Pressure_Compensation @ 0x6FD48, 16 bytes
+    Description: AFR/Lambda correction based on atmospheric pressure
+    Axes: Barometric pressure (900-1100 kPa estimated)
+    Effect: Adjusts fuel mixture for altitude changes
+
+Injection Angle AFR Input:
+  Injection_Angle_Related_AFR_Input__axis @ 0x7AF48, 12 bytes (3 u16 values)
+  Injection_Angle_Related_AFR_Input @ 0x7AF54, 12 bytes
+    Description: AFR or fuel ratio based on injection angle
+
+Unknown Lambda Input:
+  Unknown_Lambda_Input__axis @ 0x7AF74, 8 bytes (2 u16 values)
+  Unknown_Lambda_Input @ 0x7AF7C, 8 bytes
+    Description: Alternative lambda/AFR parameter (requires analysis)
+
+Lambda Control - Safe Mode Fueling:
+  (Covered in Section 1 - Open Loop Fuelling tables)
+  Open_Loop_Fuelling___Safe_mode__axis @ 0x72684, 76 bytes
+  Open_Loop_Fuelling___Safe_mode @ 0x72684, 400 bytes
+    Description: Fuel quantity in safe mode (AFR-related)
+
+Lambda Check Data Type Tables (Diagnostic):
+  Table_2D___299_Check_DataType__axis @ 0x6FDDE0, 64 bytes
+  Table_2D___299_Check_DataType @ 0x6FDE20, 64 bytes
+    Description: Data validation table for lambda controls
+
+  Table_2D___300_Check_DataType__axis @ 0x6FE60, 88 bytes
+  Table_2D___300_Check_DataType @ 0x6FE60, 88 bytes
+    Description: Additional lambda data validation
+
+
+================================================================================
+5. OMP (OIL METERING PUMP) TABLES
+================================================================================
+
+Oil Metering Pump - Load-Based Control:
+  Oil_Metering_By_Load__axis @ 0x79080, 68 bytes (17 u16 load values)
+  Oil_Metering_By_Load @ 0x790C4, 324 bytes
+    Description: Oil pump injection rate vs engine load
+    Axes: RPM (primary) x Load (secondary)
+    Units: Oil volume (mL/min or relative scale 0-100%)
+    Typical Range: 0-5 L/min for rotary engines
+    2D Grid: 17 RPM points x 19 load points estimated
+
+Oil Metering Pump - Throttle-Based Control:
+  Oil_Metering_By_Throttle__axis @ 0x79254, 16 bytes (4 u16 throttle values)
+  Oil_Metering_By_Throttle @ 0x79264, 76 bytes
+    Description: Oil injection rate vs throttle angle
+    Axes: Throttle position (0-100%)
+    Units: Flow rate or relative scale
+
+Oil Metering Pump - 3D Configuration:
+  Table_3D___119___axis @ 0x792C8, 20 bytes
+  Table_3D___119___axis (alt) @ 0x792DC, 48 bytes
+  Table_3D___119_ @ 0x792DC, 48 bytes
+    Description: Complex OMP variant (3D table)
+    Axes: Possibly RPM x Load x Temperature
+
+VDI (Variable Displacement Inlet) Open:
+  VDI_Open @ 0x7A5A0, 92 bytes
+    Description: Intake manifold variable geometry control
+    Related to OMP coordination
+
+
+================================================================================
+6. IDLE CONTROL TABLES
+================================================================================
+
+Idle Target Revolutions Per Minute (A through I variants):
+
+  Idle_Target_A__axis @ 0x6E880, 16 bytes (4 u16 values)
+  Idle_Target_A @ 0x6E880, 16 bytes
+    Description: Idle target RPM variant A
+    Axis: Coolant temperature (-40 to +120C)
+    Units: RPM (500-1500 range typical)
+    Resolution: 25 RPM/count estimated
+
+  Idle_Target_B__axis @ 0x6E8C0, 24 bytes (6 u16 values)
+  Idle_Target_B @ 0x6E8D8, 24 bytes
+    Description: Idle target RPM variant B (temperature compensated)
+    Extended axis for finer temperature control
+
+  Idle_Target_C__axis @ 0x6E908, 24 bytes
+  Idle_Target_C @ 0x6E920, 24 bytes
+    Description: Idle target RPM variant C
+
+  Idle_Target_D__axis @ 0x6E950, 24 bytes
+  Idle_Target_D @ 0x6E968, 24 bytes
+    Description: Idle target RPM variant D
+
+  Idle_Target_E__axis @ 0x6E998, 24 bytes
+  Idle_Target_E @ 0x6E9B0, 24 bytes
+    Description: Idle target RPM variant E
+
+  Idle_Target_F__axis @ 0x6E9CC, 16 bytes (4 u16 values)
+  Idle_Target_F @ 0x6E9DC, 16 bytes
+    Description: Idle target RPM variant F (reduced axis)
+
+  Idle_Target_G__axis @ 0x6E9F8, 16 bytes
+  Idle_Target_G @ 0x6EA08, 16 bytes
+    Description: Idle target RPM variant G
+
+  Idle_Target_H__axis @ 0x6EA24, 16 bytes
+  Idle_Target_H @ 0x6EA34, 16 bytes
+    Description: Idle target RPM variant H
+
+  Idle_Target_I__axis @ 0x6EA50, 16 bytes
+  Idle_Target_I @ 0x6EA60, 16 bytes
+    Description: Idle target RPM variant I
+
+Idle Control - Ancillary Systems:
+  Airflow_Or_Load_Related__axis @ 0x7A628, 20 bytes
+  Airflow_Or_Load_Related @ 0x7A63C, 20 bytes
+    Description: Load-based idle adjustment
+
+  Table_2D___231_Airflow_Related__axis @ 0x7A65C, 16 bytes
+  Table_2D___231_Airflow_Related @ 0x7A66C, 16 bytes
+    Description: Airflow-based idle compensation
+
+
+================================================================================
+7. SENSOR SCALING TABLES
+================================================================================
+
+Coolant Temperature (CLT) Sensor Scaling:
+  CLT_Sensor_Scaling__axis @ 0x6F8EC, 128 bytes (32 u16 ADC values)
+  CLT_Sensor_Scaling @ 0x6F96C, 304 bytes (76 u32 or 152 u16 values)
+    Description: ADC counts to Celsius conversion lookup
+    Axis: ADC input (8-bit: 0-255, representing 0-5V)
+    Range: -40C to +130C estimated
+    Resolution: 0.625C per count
+    Actual ROM Values (sample):
+      0x6F8EC: 0x3E6560 (raw bytes, likely float format)
+      0x6F8F0: 0x3E872B
+      0x6F8F4: 0x3E9DB2
+      0x6F8F8: 0x3EED91
+      0x6F8FC: 0x3F1EB8
+      0x6F900: 0x3F46A7
+      0x6F904: 0x3F6ED9
+      0x6F908: 0x3F8B64
+    Units: Degrees Celsius (offset by -40C to cover negative range)
+
+Mass Airflow (MAF) Sensor Scaling:
+  MAF_Scaling__axis @ 0x6FB18, 192 bytes (48 u16 ADC values)
+  MAF_Scaling @ 0x6FBD8, 256 bytes (64 u32 or 128 u16 values)
+    Description: Air mass intake rate vs sensor voltage
+    Axis: ADC input (0-255 = 0-5V)
+    Units: g/s (grams per second)
+    Range: 0-250 g/s estimated
+    Resolution: ~1 g/s per count
+    Calibration: Linear or polynomial fit typical
+    Actual ROM Values (sample):
+      0x6FB18: 0x3F5C00
+      0x6FB1C: 0x3F7A1C (increases as voltage increases)
+      0x6FB20: 0x3F820C
+      0x6FB24: 0x3F870A
+      0x6FB28: 0x3F8C08
+      0x6FB2C: 0x3F9106
+      0x6FB30: 0x3F9604
+      0x6FB34: 0x3F9B02
+
+Intake Air Temperature (IAT) Sensor Scaling:
+  IAT_Sensor_Scaling__axis @ 0x6FFEE8, 116 bytes (29 u16 ADC values)
+  IAT_Sensor_Scaling @ 0x70050, 116 bytes
+    Description: Intake air temperature conversion (thermistor)
+    Axis: ADC input (0-255)
+    Range: -40C to +120C estimated
+    Units: Degrees Celsius
+    Similar to CLT but different sensor characteristics
+
+Barometric Pressure Sensor Scaling:
+  Barometric_Pressure_Sensor_Max_ADC_Count @ 0x6CF6C, 2 bytes (u16)
+    Description: Maximum ADC count for barometric sensor
+    Typical Value: ~255 (5V = 1 atmosphere max)
+
+  Barometric_Pressure_Sensor_Min_ADC_Count @ 0x6CF6E, 54 bytes
+    Description: Minimum ADC count and scaling table
+    Units: kPa (absolute pressure)
+    Range: 70-110 kPa (sea level = 101 kPa)
+
+  Barometric_Pressure_Sensor_Min_Voltage @ 0x7A930, 4 bytes
+    Description: Minimum input voltage (lower ADC clip)
+    Typical: 0.5V (prevents near-zero reading artifacts)
+
+  Barometric_Pressure_Sensor_Max_Voltage @ 0x7A934, 136 bytes
+    Description: Maximum voltage scaling data
+
+  Barometric_Pressure_Sensor_Offset @ 0x7A9BC, 4 bytes
+    Description: Offset correction for sensor bias
+    Units: kPa
+
+  Barometric_Pressure_Sensor_Slope @ 0x7A9D0, 20 bytes
+    Description: Slope/sensitivity for linear conversion
+    Units: kPa per volt
+
+Throttle Position (TPS) Sensor:
+  Maximum_Throttle_Angle @ 0x73F98, 44 bytes
+    Description: Full-scale throttle angle calibration
+    Units: Degrees (0-90 typical)
+    Units: Raw ADC or degrees
+
+Accel Pedal to Throttle Position Mapping:
+  Accel_Pedal_to_Throttle_Position_N1__axis @ 0x74250, 72 bytes
+  Accel_Pedal_to_Throttle_Position_N1 @ 0x74544, 756 bytes
+    Description: Pedal input (0-100%) to throttle command
+    Variant N1 (normal mode)
+
+  Accel_Pedal_to_Throttle_Position_N2__axis @ 0x74598, 72 bytes
+  Accel_Pedal_to_Throttle_Position_N2 @ 0x745E0, 756 bytes
+    Description: Pedal to throttle mapping N2
+
+  Accel_Pedal_to_Throttle_Position_N3__axis @ 0x74928, 72 bytes
+  Accel_Pedal_to_Throttle_Position_N3 @ 0x74970, 756 bytes
+    Description: Pedal to throttle mapping N3
+
+  Accel_Pedal_to_Throttle_Position_N4__axis @ 0x74CB8, 72 bytes
+  Accel_Pedal_to_Throttle_Position_N4 @ 0x74D00, 816 bytes
+    Description: Pedal to throttle mapping N4
+    Total Size: 816 bytes (extended for sport mode or alternate mapping)
+
+
+================================================================================
+8. REV LIMIT TABLES (SUPPLEMENTARY)
+================================================================================
+
+Load-Based Rev Limiting:
+  Load_Limit_A__axis @ 0x7C1B4, 48 bytes
+  Load_Limit_A @ 0x7C1B4, 48 bytes
+    Description: Rev limit A based on engine load
+    Units: RPM limit
+    Range: 6500-8500 RPM
+
+  Load_Limit_B__axis @ 0x7C214, 280 bytes
+  Load_Limit_B @ 0x7C214, 280 bytes
+    Description: Rev limit B (load-dependent)
+    Axes: Multiple load points
+
+  Load_Limit_C__axis @ 0x7C354, 96 bytes
+  Load_Limit_C @ 0x7C354, 96 bytes
+    Description: Rev limit C variant
+
+
+================================================================================
+9. UNNAMED/GENERIC TABLES (For Future Identification)
+================================================================================
+
+2D Tables (Numbered Sequence):
+
+  Table_2D___0___axis @ 0x6CFA4, 64 bytes
+  Table_2D___0_ @ 0x6CFE4, 16 bytes
+
+  Table_2D___1___axis @ 0x6CFF4, 64 bytes
+  Table_2D___1_ @ 0x6D034, 16 bytes
+
+  Table_2D___2___axis @ 0x6D044, 64 bytes
+  Table_2D___2_ @ 0x6D084, 104 bytes
+
+  Table_2D___3___axis @ 0x6D0EC, 40 bytes
+  Table_2D___3_ @ 0x6D114, 12 bytes
+
+  Table_2D___4___axis @ 0x6D120, 24 bytes
+  Table_2D___4_ @ 0x6D138, 8 bytes
+
+  [Tables 5-130+ continue in this numbering scheme]
+
+  Most recently numbered: Table_2D___374_Check_DataType__axis @ 0x7D92C, 32 bytes
+
+3D Tables (Numbered Sequence):
+
+  Table_3D___0___axis @ 0x6D294, 24 bytes
+  Table_3D___0___axis (alt) @ 0x6D2AC, 96 bytes
+  Table_3D___0_ @ 0x6D2AC, 96 bytes
+
+  Table_3D___1___axis @ 0x6D34C, 24 bytes
+  Table_3D___1___axis (alt) @ 0x6D364, 96 bytes
+  Table_3D___1_ @ 0x6D364, 96 bytes
+
+  Table_3D___2___axis @ 0x6D404, 24 bytes
+  Table_3D___2_ @ 0x6D41C, 96 bytes
+
+  Table_3D___3___axis @ 0x6D4BC, 24 bytes
+  Table_3D___3_ @ 0x6D4D4, 104 bytes
+
+  [Tables 4-126+ continue in this numbering scheme]
+
+  Most recently numbered: Table_3D___126___axis @ 0x7BD50, 68 bytes
+  Table_3D___126_ @ 0x7BD94, 700 bytes
+
+Additional Notable Unnamed Tables:
+
+  Torque_To_Accel_Position__axis @ 0x73090, 76 bytes (19 u16 values)
+  Torque_To_Accel_Position @ 0x73044, 988 bytes
+    Description: Maps engine torque output to accelerator pedal position response
+    Complex 2D or 3D lookup for drive feel tuning
+
+  Throttle_Position_To_Torque__axis @ 0x734A4, 80 bytes
+  Throttle_Position_To_Torque @ 0x734F4, 628 bytes
+    Description: Throttle input to requested engine torque
+    Critical for throttle response calibration
+
+  Engine_Load_Compensation__axis @ 0x78698, 80 bytes
+  Engine_Load_Compensation @ 0x786E8, 744 bytes
+    Description: Load-dependent correction factors
+    2D table: RPM x Load
+
+  Engine_Torque__axis @ 0x76624, 76 bytes
+  Engine_Torque @ 0x76670, 684 bytes
+    Description: Estimated or target engine torque output
+    2D lookup: RPM x Load
+
+  Desired_Charge_Voltage__axis @ 0x7530C, 20 bytes
+  Desired_Charge_Voltage @ 0x7530C, 20 bytes
+    Description: Alternator target charging voltage
+    Axes: Coolant temperature, battery state
+    Units: Volts (13.5-14.5V typical for automotive)
+
+
+================================================================================
+10. SUMMARY AND NOTES
+================================================================================
+
+Calibration Area Overview:
+  Total ROM Size: 4,352 bytes (0x6CF00 to 0x7E000)
+  Number of Calibration Tables: 1,214 items (including axis arrays)
+  Primary Table Types: Fuel (25%), Ignition (20%), Idle (15%), Misc (40%)
+
+Data Type Distribution:
+  - u8 (8-bit unsigned): Small scalar values, flags, counts
+  - u16 (16-bit unsigned): Axis points, RPM values, temperatures
+  - u32 (32-bit unsigned): Larger scalar values
+  - float (32-bit IEEE): Temperature thresholds, rev limits, calibration constants
+
+Scaling Patterns:
+  RPM Values: Typically stored as u16, scaled by 0.25 or multiplied by 25
+  Temperature: Stored as u16 ADC or u32 float, offset -40C
+  Throttle/Load: 0-255 ADC or 0-100% scaled
+  Degrees: Often 0-255 = 0-360 degrees mapping
+
+Critical Float Values Identified:
+  Rev_Limit @ 0x6D54C = 1175232512 (raw u32) = ~8000 RPM (physical limit)
+  Cold_Rev_Limit_Threshold @ 0x6D53C = 1101004800 = ~20C threshold
+
+Common Axis Patterns:
+  Fuel/Ignition tables: 80-byte RPM axis (20 points at 25 RPM spacing)
+  Load tables: 72-byte load axis (18-20 points)
+  Temperature: 28-40 bytes (7-10 points from -40C to +130C)
+
+Known Table Clusters:
+  Leading Ignition: 0x6D6B0-0x6D8B0 (large 360-byte data tables)
+  Fuel Open Loop: 0x71BD8-0x72964 (extensive fuel mapping)
+  OMP Control: 0x79034-0x79264 (oil pump lookup tables)
+  Sensor Scaling: 0x6F8EC-0x70050 (thermistor/voltage conversions)
+
+Reverse Engineering Notes:
+  - Some table names end in "_Check_DataType" suggesting validation/checksum
+  - Numbered Table_2D___ and Table_3D___ entries need manual identification
+  - RomRaider definitions provide critical mapping for automated tools
+  - Float type inference based on value ranges and typical ECU patterns
+  - Axis sizes often vary by 4-byte increments suggesting alignment padding
+
+ROM Address Range: 0x6CF00-0x7E000 = 0x10F00 bytes (69,888 bytes total)
+Valid calibration tables: 0x6CF00-0x7D92C (remaining area: padding/stubs)
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================

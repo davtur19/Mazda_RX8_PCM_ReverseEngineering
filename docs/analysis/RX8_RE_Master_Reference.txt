@@ -1,0 +1,434 @@
+================================================================================
+  MAZDA RX-8 S1 PCM FIRMWARE — MASTER REVERSE ENGINEERING REFERENCE
+  ROM: 60E1D400.bin | N3J1EL — EU 6-port 231hp MT, 2004-2008
+  ECU: Denso | CPU: Renesas SH7055 (SH-2A, big-endian, 32-bit RISC)
+================================================================================
+
+================================================================================
+1. PROJECT FILES INDEX
+================================================================================
+
+  docs/analysis/
+    RX8_RE_Master_Reference.txt          THIS FILE — Master index and quick reference
+    RX8_UDS_Security_Analysis.txt         8KB — UDS SID 0x27 fixed-key auth, full unlock sequence
+    RX8_Flash_Reprogramming_Analysis.txt 42KB — UDS flash protocol (SID 0x34/0x36/0x37)
+    FLASH_REPROGRAMMING_QUICKREF.txt      7KB — Flash protocol quick reference card
+    RX8_EEPROM_Analysis.txt              32KB — EEPROM S-93C56C full analysis
+    RX8_OMP_Analysis.txt                 56KB — Oil Metering Pump dual-table control
+    RX8_Throttle_DBW_Analysis.txt        30KB — Drive-by-wire throttle, pedal maps
+    RX8_Cooling_AC_Analysis.txt          21KB — Cooling fan logic, aux fan task
+    RX8_Control_Chains.txt               47KB — Fuel+ignition end-to-end control flow
+    Function_Categories_Summary.txt       8KB — Category breakdown of all 2789 functions
+    RX8_Function_Rename_Log.txt           5KB — Function naming audit log
+
+  docs/pseudocode/
+    RX8_Firmware_Pseudocode_Complete.txt        134KB — C pseudocode for ~80 functions
+    RX8_Idle_VIS_MAF_Catalyst_Pseudocode.txt    60KB — Idle, 6-port, MAF, catalyst
+
+  docs/maps/
+    RX8_Calibration_Map.txt              30KB — All 1214 ROM calibration tables
+    RX8_RAM_Map.txt                      33KB — RAM variable map (0xFFFF6000-0xFFFFDFFF)
+    RX8_RAM_Map_Summary.txt              14KB — RAM quick reference with ASCII trees
+
+================================================================================
+2. MEMORY MAP
+================================================================================
+
+  ADDRESS RANGE             SIZE    DESCRIPTION
+  ──────────────────────────────────────────────────────────────
+  0x00000000 - 0x0007FFFF   512KB   ROM (this firmware)
+  0x00000000 - 0x00000400           Vector table (reset, NMI, exceptions)
+  0x00000400 - 0x0006CF00           Code section (executable)
+  0x0006CF00 - 0x0007E000          Calibration area (tunable data)
+  0x0007E000 - 0x0007FFFF          DTC tables, checksums, ROM ID
+
+  0xFFFF6000 - 0xFFFFDFFF   32KB    RAM
+  0xFFFF6000 - 0xFFFF9EFF          RTOS kernel, task control blocks
+  0xFFFF9F00 - 0xFFFFA1FF          Sensor/ADC workspace
+  0xFFFFA200 - 0xFFFFB800          Engine control variables
+  0xFFFFB800 - 0xFFFFC000          Engine state, RPM, temperature
+  0xFFFFC000 - 0xFFFFD800          Diagnostics, DTC storage
+  0xFFFFD800 - 0xFFFFDF00          OBD service buffers
+  0xFFFFDF00 - 0xFFFFDFFF          System: SP, magic word, status
+
+  SFR (named by SH7055 device file):
+  0xFFFF8000 - 0xFFFF8FFF          HCAN0 (CAN controller)
+  0xFFFFE000 - 0xFFFFFFFF          SH7055 on-chip peripherals
+
+================================================================================
+3. BOOT SEQUENCE
+================================================================================
+
+  Power-on / Reset:
+  ┌────────────────────────────────────────────────────────┐
+  │ Vector table → PC=0x8B8, SP=0xFFFFDFA0                │
+  │                                                        │
+  │ 0x8B8  reset_handler                                   │
+  │   ├── 0x8CC  bsc_init (Bus State Controller)           │
+  │   ├── 0x8F6  gpio_init (SPI/CAN pins)                 │
+  │   ├── 0x4E0  main_init                                 │
+  │   │    ├── 0x572  wdt_init (disable watchdog)          │
+  │   │    │    └── Write 0x5A1F → WDT_RSTCSR             │
+  │   │    │    └── Write 0x5A00 → WDT_TCSR               │
+  │   │    ├── 0x170  hw_init_1 (INTC, CAN, SPI, ATU)     │
+  │   │    ├── 0x41C  hw_init_2 (peripheral registers)     │
+  │   │    ├── 0x3D4  hw_init_3 (final SFR config)         │
+  │   │    ├── Check 0xFFFFDFFC == 0x5AA5A55A?             │
+  │   │    │    NO  → 0x5B0 cold_start_ram_init            │
+  │   │    │    YES → skip (warm reset / watchdog reset)   │
+  │   │    └── Main RTOS loop (~0x51A)                     │
+  │   └── 0x8C8  infinite trap (should never reach)        │
+  └────────────────────────────────────────────────────────┘
+
+================================================================================
+4. RTOS TASK STRUCTURE
+================================================================================
+
+  The firmware uses a fixed-priority preemptive RTOS with 2 main task dispatchers:
+
+  DISPATCHER A: calc_knock_retard_filter (0x11B70)
+  Priority mask check: 0x40
+  ┌──────────────────────────────────────────────────┐
+  │ 1. aux_fan_control_task           (cooling)      │
+  │ 2. priority_task_sensor_check     (sensors)      │
+  │ 3. task_scheduler_high_priority   (RTOS)         │
+  │ 4. knock_monitoring_pipeline      (KNOCK)        │
+  │ 5. value_calc_task_wrapper        (computation)  │
+  │ 6. priority_task_dispatch_ch0     (channel 0)    │
+  │ 7. control_decrement_dispatcher   (timers)       │
+  │ 8. task_throttle_control          (DBW throttle) │
+  │ 9. backprop_0x56CDA              (adaptive)      │
+  │ 10. check_system_status_reg       (monitoring)   │
+  │ 11. obd_service_handler_6606C     (OBD)          │
+  │ 12. obd_service_handler_66094     (OBD)          │
+  │ → RTOS sleep check (0x16ECE)                     │
+  └──────────────────────────────────────────────────┘
+
+  DISPATCHER B: calc_lambda_feedback_pid (0x11A34)
+  Priority mask check: 0x20
+  ┌──────────────────────────────────────────────────┐
+  │ 1. secondary_emission_control     (emissions)    │
+  │ 2. priority_task_alternate_init   (init)         │
+  │ 3. interrupt_handler_dispatcher   (interrupts)   │
+  │ 4. ignition_timing_pipeline       (IGNITION)     │
+  │ 5. calc_ignition_diagnostics      (diagnostics)  │
+  │ 6. fuel_secondary_dispatcher      (FUEL)         │
+  │ 7. engine_control_main_loop       (ENGINE)       │
+  │ 8. priority_task_dispatch_ch1     (channel 1)    │
+  │ 9. priority_multi_function        (multi)        │
+  │ 10. transmission_shift_control    (gearbox)      │
+  │ 11. torque_dispatcher             (torque)       │
+  │ 12-15. priority dispatchers       (various)      │
+  │ 16. obd_service_handler_67482     (OBD)          │
+  │ → RTOS sleep check (0x16E6A)                     │
+  └──────────────────────────────────────────────────┘
+
+================================================================================
+5. FUEL INJECTION CONTROL CHAIN
+================================================================================
+
+  Sensor Input → Processing → ROM Lookup → Corrections → Output
+
+  ┌─────────┐   ┌──────────┐   ┌────────────┐   ┌──────────┐   ┌──────────┐
+  │ MAF ADC │──→│ MAF      │──→│ VE Table   │──→│ Enrich-  │──→│ Injector │
+  │ TPS ADC │   │ Scaling  │   │ Lookup     │   │ ments    │   │ PWM Out  │
+  │ RPM     │   │ (0x6FB18)│   │ (3D interp)│   │ (cold,   │   │          │
+  │ CLT     │   └──────────┘   └────────────┘   │ accel,   │   └──────────┘
+  └─────────┘                                    │ lambda)  │
+                                                 └──────────┘
+
+  Key Functions:
+    0x22094  fuel_main_pipeline (master dispatcher, 27 sub-functions)
+    0x211DC  sequential_fuel_calc (core pulse width, 500 bytes)
+    0x24038  fuel_basic_control (transient enrichment, 508 bytes)
+    0x22334  maf_sensor_scaling (voltage → airflow)
+
+  Key ROM Tables:
+    0x6FB18  MAF_Scaling (192B axis + 256B data)
+    0x6FBD8  Fuel pulse width base table
+    0x6AD20  Cold start enrichment
+    0x6D748  VE reference (shared with ignition)
+
+  Key RAM Variables:
+    0xFFFFB290  Primary fuel pulse width (output)
+    0xFFFFB2AC  Secondary counter
+    0xFFFFAA10  Load factor (shared)
+    0xFFFFA374  Lambda correction factor
+
+================================================================================
+6. IGNITION TIMING CONTROL CHAIN
+================================================================================
+
+  ┌─────────┐   ┌──────────┐   ┌────────────┐   ┌──────────┐   ┌──────────┐
+  │ RPM     │──→│ Base     │──→│ Corrections│──→│ Safety   │──→│ Coil     │
+  │ Load    │   │ Timing   │   │ (knock,    │   │ Limiter  │   │ Dwell +  │
+  │ CLT     │   │ Lookup   │   │  temp,     │   │ (0xE38C) │   │ Advance  │
+  │ Knock   │   │ (3D)     │   │  accel)    │   └──────────┘   │ Output   │
+  └─────────┘   └──────────┘   └────────────┘                  └──────────┘
+
+  WANKEL-SPECIFIC: 2 spark plugs per rotor (leading + trailing)
+    Leading:  fires first, main combustion, 10-15 deg BTDC
+    Trailing: fires after, emissions cleanup, 40-60 deg ATDC
+
+  Key Functions:
+    0xE7F8   ignition_timing_calc (main, 868 bytes, 15 correction gates)
+    0x1A0C8  spark_advance_calc_main (secondary, 850 bytes, knock recovery)
+    0xE38C   ignition_advance_limiter (safety: safe mode → 2 deg)
+    0x2204C  ignition_timing_pipeline (dispatcher)
+
+  Key ROM Tables:
+    0x6D748  Ignition_Timing_Leading_Base (80B RPM axis × 72B load axis = 360B data)
+    0x6DDD4  Ignition_Timing_Trailing_Base (same structure)
+    0x6D948  Ignition_Timing_Leading_Advance___Safe_Mode (360B)
+    0x6DB48  Ignition_Timing_Leading_Advance (360B)
+    0x6E1D4  Ignition_Timing_Trailing_Advance (360B)
+    0x6D624  Ignition_Timing_Leading_Idle_Temperature_Compensation (72B)
+    0x6E358  Ignition_Leading_Minimum (48B)
+    0x6E3A4  Ignition_Trailing_Minimum (180B)
+
+  Key RAM Variables:
+    0xFFFFA458  Leading advance (output)
+    0xFFFFA448  Trailing advance (output)
+    0xFFFFA480  Coil dwell time
+    0xFFFFA418  Advance limit byte (0=normal, 1=limited, 2=safe mode)
+    0xFFFFAA78  Knock counter
+
+================================================================================
+7. KNOCK DETECTION & CONTROL
+================================================================================
+
+  Per-cylinder knock analysis with dual-pass state machine:
+
+  Pass 1: MEASURE           Pass 2: RESPOND
+  ┌──────────────────┐      ┌──────────────────┐
+  │ pulse_window     │      │ State Machine:   │
+  │ compute()        │      │ 0 = Monitoring   │
+  │    ↓             │      │ 1 = Retard Active│
+  │ Find max level   │      │ 2 = Recovery     │
+  │ across sub-ch    │      │                  │
+  │    ↓             │      │ Retard → fuel cut│
+  │ Compare vs       │      │ if knock persists│
+  │ threshold        │      └──────────────────┘
+  │ (0x1680000)      │
+  │    ↓             │
+  │ KNOCK? → counter │
+  └──────────────────┘
+
+  Function: knock_detection_processing (0xF770, 0x320 bytes)
+  Pipeline: knock_monitoring_pipeline_22148 → knock_detection_control_20A90
+
+  RAM Block: 0xFFFFA4B4 - 0xFFFFA571 (per-channel, 0x58 bytes each)
+  Global Counter: 0xFFFFA564 (u16, saturated)
+
+  Tuning:
+    Threshold 0x1680000: INCREASE = less sensitive, DECREASE = more sensitive
+    Margin divisor 0xB40000: affects retard magnitude per event
+
+================================================================================
+8. LAMBDA / CLOSED-LOOP O2 CONTROL
+================================================================================
+
+  PI controller with per-cylinder trim:
+
+  ┌─────────┐   ┌───────────┐   ┌───────────┐   ┌──────────┐
+  │ O2      │──→│ P-term:   │──→│ I-term:   │──→│ Per-cyl  │
+  │ Sensors │   │ error ×   │   │ accumulate│   │ fuel     │
+  │ (2 per  │   │ gain      │   │ with      │   │ trim     │
+  │ rotor)  │   │ (0x6B8D4) │   │ bounds    │   │ output   │
+  └─────────┘   └───────────┘   └───────────┘   └──────────┘
+
+  Function: lambda_control_closed_loop (0xC508, 0x482 bytes)
+
+  ROM PID Gains:     0x6B8D4 (P), 0x6B90C (I primary), 0x6B900 (I secondary)
+  Safety Clamps:     0xFFFFC0CC (P max), 0xFFFFC0D0 (I step), 0xFFFFC0D4 (total)
+  Status:            0xFFFFA324 (0=open-loop, 1=closed-loop)
+  Disable:           0xFFFFA38C = 1 forces open-loop (used during WOT/decel)
+  Per-cyl targets:   0xFFFFA334 (float array, normally lambda=1.0 for narrowband)
+
+================================================================================
+9. REV LIMITER
+================================================================================
+
+  Three-tier protection:
+
+  TIER 1: COLD START LIMITER (0xF11A)
+    Condition: Engine cold (0xFFFFBB54 != 0)
+    Action: Reduced RPM ceiling via 0x6D534 duty value
+    RAM: 0xFFFFA4A6 (active), 0xFFFFA4AE (duty counter)
+
+  TIER 2: SOFT LIMIT (0xF192)
+    Threshold: Rev_Limit at 0x6D54C (stock ~9000 RPM)
+    Action: Progressive fuel cut with hysteresis
+    RAM: 0xFFFFA4AB (fuel cut flag), 0xFFFFA4A8 (duration counter)
+
+  TIER 3: HARD LIMIT (0xF192)
+    Threshold: Rev_Limit + offset at 0x6D550
+    Action: Immediate full fuel cut
+    RAM: 0xFFFFA4AC (hard limit active)
+
+  Fuel Cut Duty: rpm_limiter_fuel_cutoff (0xC59E)
+    Thresholds: 0x7A1D8 (enable), 0x7A1DC (disable), 0x7A1DE (control)
+    Output: 0xFFFFA386 (duty byte)
+
+================================================================================
+10. DTC / DIAGNOSTICS / OBD-II
+================================================================================
+
+  DTC Enable Mechanism:
+    Bitmask table at ROM 0x7E4DC, indexed by DTC number × 4
+    ANDed with global RAM mask at 0xFFFFD96C
+    Result: monitor enabled/disabled per DTC
+
+  Main Gate:     obd_service_handler_6743C (routes OBD requests)
+  Monitor Exec:  obd_service_handler_67494 (runs 10 monitors)
+
+  DIAC Monitor Flags:
+    0xFFFFA401  O2 Sensor (P0130/131/132) → obd_service ID 0x80
+    0xFFFFA402  Catalyst Efficiency (P0420/430) → ID 0x7F
+    0xFFFFA403  EGR System (P0400/401) → ID 0x81
+    0xFFFFA404  EVAP System (P0440) → ID 0x82
+
+  Catalyst DTC Disable (P0420):
+    Entry at 0x7E614 (index 0x4E × 4 = offset 0x138)
+    Value: 0x40800004 → zero all 4 bytes to disable
+
+  UDS Services Implemented:
+    SID 0x10  diag_start_session_handler (0x1572)
+    SID 0x11  diag_ecu_reset (0x1970)
+    SID 0x22  diag_read_data (0x19DA)
+    SID 0x27  diag_security_access (0x17D8) — Seed-Key auth
+    SID 0x34  diag_request_download (0x1A70)
+    SID 0x36  diag_transfer_data (0x1B8C)
+    SID 0x37  diag_transfer_exit (0x1CB8)
+    SID 0x3E  diag_tester_present (0x1908)
+
+================================================================================
+11. CAN BUS COMMUNICATION
+================================================================================
+
+  Hardware: HCAN0 at 0xFFFF8000, 16 mailboxes, round-robin on 4 active
+  Serial bridge: SCI1 synchronous mode, DMA channels 2 (TX) / 3 (RX)
+
+  Message IDs Discovered:
+    0xCA (202)  Engine Status — RPM, throttle, fuel status (10 Hz broadcast)
+    0xDC (220)  Sensor Data — temperature, O2 readings (event-triggered)
+
+  Key Functions:
+    0xD6A0  hcan_init_and_status_check (HCAN0 initialization)
+    0xB770  serial_can_hardware_init (SCI/UART configuration)
+    0xA57C  can_periodic_task_handler (10 Hz message scheduler)
+    0xBB6C  can_serial_communication_handler (DMA-based, 582 bytes)
+    0xA608  hcan0_mailbox_rotate_enqueue (round-robin mailbox selection)
+
+  CAN Task Counter: 0xFFFFA188 (10 Hz increment)
+  Init Status Flag: 0xFFFFA3FB
+
+================================================================================
+12. SENSOR SCALING TABLES
+================================================================================
+
+  Sensor          ROM Address    Axis Size    Data Size    Units
+  ──────────────────────────────────────────────────────────────
+  MAF Scaling     0x6FB18        192B         256B         V → g/s
+  CLT Scaling     0x6F8EC        128B         304B         ADC → deg C
+  IAT Scaling     0x6FFE8        64B          116B         ADC → deg C
+  Lambda          0x6FD74        44B          44B          V → lambda
+  Lambda Baro     0x6FD38        16B          16B          kPa → factor
+  Baro Pressure   0x6CF6C        2B           -            ADC count max
+  TPS             (bilinear interp via sensor_calc_interp_ch0)
+
+  ADC: 10-bit SAR via SCI0 serial interface
+  Filtering: Single-pole IIR, alpha configurable 0.125-0.5
+  Crank: 36-1 tooth pattern, 10 deg per tooth, 4-state state machine
+
+================================================================================
+13. KEY TUNING ADDRESSES (QUICK REFERENCE)
+================================================================================
+
+  WHAT                      ADDRESS     SIZE   TYPE    STOCK VALUE
+  ──────────────────────────────────────────────────────────────────
+  Rev Limit                 0x6D54C     56B    float[] ~9000 RPM
+  Cold Rev Limit Threshold  0x6D53C     8B     float   ~20 deg C
+  Cold Rev Limit            0x6D544     8B     float   ~5500 RPM
+  Ign Leading Base          0x6D748     360B   float   3D table
+  Ign Trailing Base         0x6DDD4     360B   float   3D table
+  Ign Leading Advance       0x6DB48     360B   float   3D table
+  Ign Trailing Advance      0x6E1D4     360B   float   3D table
+  Ign Leading Safe Mode     0x6D948     360B   float   3D table
+  Ign Leading Idle Base     0x6D59C     8B     float   2D table
+  Ign Trailing Idle Base    0x6D5EC     8B     float   2D table
+  Ign Leading Minimum       0x6E358     48B    float   3D table
+  Ign Trailing Minimum      0x6E3A4     180B   float   3D table
+  MAF Scaling               0x6FB18     448B   float   1D table
+  CLT Sensor Scaling        0x6F8EC     432B   float   1D table
+  IAT Sensor Scaling        0x6FFE8     180B   float   1D table
+  Lambda PID P-gain         0x6B8D4     var    float
+  Lambda PID I-gain #1      0x6B90C     var    float
+  Lambda PID I-gain #2      0x6B900     var    float
+  Knock Threshold           0x1680000   const  u32     (in code)
+  Knock Margin Divisor      0xB40000    const  u32     (in code)
+  DTC Bitmask Table         0x7E4DC     256B   u32[]
+  P0420 Catalyst Entry      0x7E614     4B     u32     0x40800004
+  Idle Target Tables A-I    0x6E864+    var    float   9 tables
+
+================================================================================
+14. FUNCTION COUNT BY CATEGORY
+================================================================================
+
+  Total functions in IDB: 2789 (100% named)
+
+  Category                  Count    Address Range
+  ────────────────────────────────────────────────
+  Boot / Startup              30    0x000-0xFFF
+  Hardware Abstraction       100    mixed
+  Serial / SPI / EEPROM      40    0x7C0-0x1300
+  UDS Diagnostic Services     20    0x1572-0x1D00
+  FPU Math Library           200    0x2054-0x2440+
+  RTOS Task Scheduling        50    0x3920-0x3B00
+  Sensor / ADC               100    0x70D0-0x9200
+  Table Interpolation          5    0x9668, 0x9878
+  CAN Bus                    100    0x9CC6-0xD700
+  Lambda / O2 Control         50    0xC508-0xC988
+  Crank / Cam Position        50    0x789E-0x8060
+  Knock Detection             30    0xF770-0xFA8E
+  Rev Limiter                 20    0xF11A-0xF356
+  Ignition Timing            150    0xE38C-0x1A200
+  Fuel Injection             200    0x1A000-0x2B000
+  Idle / VIS / OMP            80    0x12F5E-0x1CA9E
+  Diagnostics / DTC          430    0x40000-0x70000
+  Miscellaneous              134    various
+
+================================================================================
+15. FILES FOR OPEN-SOURCE TUNING SOFTWARE
+================================================================================
+
+  To build an open-source alternative to VersaTuner/MazdaEdit, you need:
+
+  1. TABLE DEFINITIONS — Use RX8_Calibration_Map.txt
+     Maps all 1214 calibration entries with addresses and sizes.
+     Combined with rx8_defs.xml from RomRaider for axis scaling.
+
+  2. READ/WRITE PROTOCOL — UDS implementation documented in pseudocode:
+     SID 0x34 (Request Download) at 0x1A70
+     SID 0x36 (Transfer Data) at 0x1B8C
+     SID 0x37 (Transfer Exit) at 0x1CB8
+     SID 0x27 (Security Access) at 0x17D8 — SEED-KEY AUTH REQUIRED
+     Flash writing covers ENTIRE ROM (not just calibration area)
+
+  3. LIVE DATA — CAN message definitions:
+     ID 0xCA: RPM, throttle, fuel status (10 Hz)
+     ID 0xDC: Sensor data (event-triggered)
+     OBD-II Mode $01 PIDs via standard CAN protocol
+
+  4. SAFETY CONSTRAINTS from this RE work:
+     - Never modify code section (0x0000-0x6CF00), only calibration
+     - Rev limit max safe for stock 13B-MSP: ~9500 RPM
+     - Ignition safe mode forces 2 deg advance (absolute minimum)
+     - Lambda disable (0xFFFFA38C=1) causes open-loop (rich/lean risk)
+     - DTC disable via bitmask zeroing at 0x7E4DC+offset is reversible
+     - OMP tables MUST NOT be reduced (apex seal lubrication critical)
+     - Cold rev limiter protects apex seals during warmup
+
+================================================================================
+END OF MASTER REFERENCE
+================================================================================

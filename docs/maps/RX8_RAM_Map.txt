@@ -1,0 +1,653 @@
+================================================================================
+MAZDA RX-8 S1 PCM FIRMWARE - RAM VARIABLE REFERENCE MAP
+Renesas SH7055 / SH-2A Big-Endian Architecture
+ROM: 60E1D400.bin (N3J1EL — EU 6-port 231hp MT, 2004-2008)
+Total RAM: 0xFFFF6000–0xFFFFDFFF (32KB)
+================================================================================
+
+CONFIDENCE LEGEND:
+  [CONFIRMED] = Address and purpose verified from disassembly and xrefs
+  [INFERRED]  = Address found in code, purpose inferred from context/naming
+  [SPECULATIVE] = Struct layout and field types are best-guess, not verified
+
+NOTE: RAM addresses are confirmed from disassembly xrefs. Struct field layouts,
+types, and exact byte-level mapping within structs are largely INFERRED from
+register usage patterns and may not be accurate at field level. Use addresses
+as starting points for your own verification.
+================================================================================
+
+================================================================================
+1. SENSOR & ADC WORKSPACE
+Address Range: 0xFFFF9F00–0xFFFFA1FF (512 bytes)
+Purpose: Sensor state storage, ADC values, calibration workspace
+Access: Read/Write from sensor processing tasks, engine control calculations
+================================================================================
+
+0xFFFF9F00–0xFFFF9F7F | Sensor State Array (4 sensors × 32 bytes each)
+    Type: uint8_t sensor_state[4][32]
+    Description: Raw ADC readings, interpolated values, and sensor status for TPS, MAF, CLT, IAT
+    Access: RW - Updated every ADC cycle, read during fuel/ignition calculations
+    Related Functions: sensor_main_process (0x9070), sensor_channel_update, sensor_interp_calc
+
+0xFFFF9F80–0xFFFF9F8F | Reserved ADC Buffer
+    Type: uint8_t reserved[16]
+    Description: ADC state machine temporary storage and DMA buffer
+    Access: RW
+
+0xFFFF9F90–0xFFFF9F9B | Engine Speed & Load Workspace
+    Type: struct { uint32_t rpm_value; uint16_t load; uint16_t temp; }
+    Description: Current engine RPM (actual value, not encoded), engine load from manifold
+    Access: RW - Written by crank/cam sync, read by all engine control subsystems
+    Related: rpm_limiter_main (0xF192), ignition_timing_calc (0xE7F8)
+
+0xFFFF9F9C–0xFFFF9FAB | ADC Result Cache
+    Type: uint16_t adc_channels[6]
+    Description: Recent ADC conversion results for TPS, MAF, CLT, IAT, O2_primary, O2_secondary
+    Access: RW - Updated by adc_single_convert (0x720E)
+
+0xFFFF9FAC–0xFFFFA00F | Sensor Correction State
+    Type: struct sensor_correction { float scale; float offset; uint8_t valid; }[4]
+    Description: Temperature and voltage compensation factors for each sensor channel
+    Access: RW - Calculated from ROM calibration tables
+
+0xFFFFA010–0xFFFFA0C7 | Sensor Config Base (4 channels × 40 bytes)
+    Type: struct { uint8_t state; float raw; float corrected; uint16_t adc; } sensors[4]
+    Description: Per-channel state machines (state 0=idle, 1=update_adc, 2=interpolate)
+    Access: RW - Updated by task scheduler
+    Related: sensor_main_process (0x9070)
+
+0xFFFFA0D8–0xFFFFA0DF | Reserved/Padding
+    Type: uint8_t reserved[8]
+    Description: Alignment padding for next subsystem
+    Access: Unused
+
+================================================================================
+2. ENGINE CONTROL VARIABLES
+Address Range: 0xFFFFA000–0xFFFFB800 (6144 bytes)
+Purpose: Core fuel, ignition, Lambda, knock, and RPM limiter state
+Access: Read/Write from engine control tasks
+================================================================================
+
+================================================================================
+2.1 FUEL INJECTION SUBSYSTEM
+================================================================================
+
+0xFFFFA100–0xFFFFA167 | Fuel Calculation State (104 bytes)
+    Type: struct {
+        float normalized_engine_speed;      // 0xFFFFA100 (engine_rpm / 1000 / 4.0)
+        uint16_t fuel_base_value;           // 0xFFFFA104 (from 3D table interpolation)
+        uint16_t fuel_correction_multiplier;// 0xFFFFA106
+        uint8_t fuel_calc_state;            // 0xFFFFA108 (state machine: 0=idle, 1=calc, 2=output)
+        uint8_t rotor_1_fuel_flag;          // 0xFFFFA109 (trigger for rotor 1 injection)
+        uint8_t rotor_2_fuel_flag;          // 0xFFFFA10A (trigger for rotor 2 injection)
+        uint8_t padding_1[5];
+        float fuel_pressure_mpa;            // 0xFFFFA110 (calculated fuel rail pressure)
+        uint32_t injector_pulse_width_usec; // 0xFFFFA114 (ATU output: 0-5000 microseconds)
+        uint16_t atu_register_ch0;          // 0xFFFFA118 (direct ATU I/O register image)
+        uint16_t atu_register_ch1;          // 0xFFFFA11A
+        uint8_t injection_timing_angle;     // 0xFFFFA11C (crank angle for injection event)
+        uint8_t injection_dwell_count;      // 0xFFFFA11D (timer counter for coil charging)
+    } fuel_state;
+    Description: Primary fuel injection control state including base calculation, trimming, and ATU interface
+    Access: RW - Updated every fuel calc cycle (≈100Hz), read by injector_pulse_width_calc
+    Related Functions:
+        - fuel_calc_per_rotor (0x9534) - Calculates base fuel pulse
+        - rotor_fuel_calc_dispatcher (0xB57A) - Applies correction tables
+        - fuel_injector_pulse_calc (0x10620) - Final ATU output
+        - injector_pulse_width_calc (0xB2E4) - PWM pulse generation
+
+0xFFFFA168–0xFFFFA16F | Fuel Cutoff State
+    Type: struct { uint8_t cutoff_flag; uint8_t reason_code; uint16_t reserved; }
+    Description: Fuel injection enable/disable for rev limiter and safety shutdown
+    Access: RW - Write by rpm_limiter_fuel_cutoff (0xC59E), read by injector output
+    Cutoff Reasons: 0x00=normal, 0x01=hard_rev_limit, 0x02=soft_rev_limit, 0x03=limp_home
+
+0xFFFFA170–0xFFFFA18B | CAN Message Buffer Array (28 bytes = 2 × 12-byte messages + 4-byte header)
+    Type: struct {
+        uint16_t message_id;        // 0xFFFFA170
+        uint8_t dlc;                // 0xFFFFA172
+        uint8_t padding;
+        uint8_t data[12];           // 0xFFFFA174-0xFFFFA17F (first message)
+    } can_messages[2];
+    Description: Double-buffered CAN message staging area for periodic TX
+    Access: RW - Written by can_schedule_tx_msg_with_timing (0xC98A), read by CAN controller
+    Related: can_msg_buffer_read_next (0xA436), hcan0_mailbox_rotate_enqueue (0xA608)
+
+0xFFFFA18C–0xFFFFA1BF | CAN/Task Control Flags (52 bytes)
+    Type: struct {
+        uint8_t task_state_0;       // 0xFFFFA18C (fuel task state)
+        uint8_t task_state_1;       // 0xFFFFA18D (ignition task state)
+        uint8_t task_state_2;       // 0xFFFFA18E (lambda task state)
+        uint8_t task_state_3;       // 0xFFFFA18F (knock task state)
+        uint16_t can_message_count; // 0xFFFFA190 (messages queued for TX)
+        uint8_t can_status_flags;   // 0xFFFFA192 (mailbox status)
+        uint8_t padding_2[13];
+    } task_control;
+    Description: Multitasking coordination and CAN controller state machine flags
+    Access: RW - Managed by task_scheduler (0xAB06)
+
+0xFFFFA1C0–0xFFFFA1C9 | Task State Flags (10 bytes)
+    Type: struct {
+        uint8_t scheduler_lock;        // 0xFFFFA1C0 (prevent nested execution)
+        uint8_t interrupt_priority;    // 0xFFFFA1C1 (SR register shadows)
+        uint8_t rotor_sync_complete;   // 0xFFFFA1C2 (crank/cam alignment done)
+        uint8_t fuel_calc_pending;     // 0xFFFFA1C3 (fuel calculation queued)
+        uint8_t ignition_calc_pending; // 0xFFFFA1C4 (ignition calculation queued)
+        uint8_t lambda_update_pending; // 0xFFFFA1C5 (O2 feedback update queued)
+        uint8_t knock_detect_pending;  // 0xFFFFA1C6 (knock detection queued)
+        uint8_t can_tx_pending;        // 0xFFFFA1C7 (CAN message waiting)
+        uint8_t padding_3[2];
+    } engine_task_flags;
+    Description: Real-time scheduler and event dispatch flags
+    Access: RW - Managed by task_scheduler, checked by main_periodic_task (0xDD76)
+    Related: task_state_mapper (0xAC94)
+
+0xFFFFA1D8–0xFFFFA208 | Rotor Position & Timing Data (49 bytes)
+    Type: struct {
+        uint16_t rotor_angle_degrees;      // 0xFFFFA1D8 (0-360, rotor 1 position)
+        uint16_t rotor_2_angle_degrees;    // 0xFFFFA1DA (0-360, rotor 2 position)
+        uint32_t rotor_sync_counter;       // 0xFFFFA1DC (crank pulse count)
+        uint8_t rotor_transition_state;    // 0xFFFFA1E0 (0-1 = which rotor approaching TDC)
+        uint8_t cam_phase_offset;          // 0xFFFFA1E1 (eccentric shaft phase offset in degrees * 0.5)
+        uint16_t crank_sync_timeout;       // 0xFFFFA1E2 (watchdog counter, cleared by sync pulse)
+        uint32_t previous_engine_speed;    // 0xFFFFA1E4 (for derivative filter)
+        uint16_t speed_change_rate;        // 0xFFFFA1E8 (RPM per cycle, for acceleration enrichment)
+        uint8_t padding_4[7];
+    } rotor_timing;
+    Description: Crank/cam synchronization state and rotor angle tracking
+    Access: R - Read by ignition_timing_calc, fuel_injector_pulse_calc; Written by rotor_position_synchronization (0xAF10)
+    Related: rotor_position_synchronization (0xAF10)
+
+0xFFFFA220–0xFFFFA22A | Per-Rotor Fuel Flags (11 bytes)
+    Type: struct {
+        uint8_t rotor_1_injection_request;  // 0xFFFFA220 (trigger flag for rotor 1)
+        uint8_t rotor_2_injection_request;  // 0xFFFFA221 (trigger flag for rotor 2)
+        uint8_t rotor_1_armed;              // 0xFFFFA222 (safety interlock)
+        uint8_t rotor_2_armed;              // 0xFFFFA223 (safety interlock)
+        uint16_t injection_event_counter;   // 0xFFFFA224 (total injections since startup)
+        uint16_t fuel_evaporative_purge_percent; // 0xFFFFA226 (carbon canister EVAP control: 0-100%)
+        uint8_t padding_5[3];
+    } rotor_fuel_dispatch;
+    Description: Per-rotor fuel injection trigger and arming state
+    Access: RW - Managed by rotor_fuel_calc_dispatcher (0xB57A)
+
+================================================================================
+2.2 IGNITION SUBSYSTEM
+================================================================================
+
+0xFFFFA300–0xFFFFA323 | Ignition Timing State (36 bytes)
+    Type: struct {
+        uint16_t ignition_advance_leading;  // 0xFFFFA300 (BTDC, leading spark in 0.1° units)
+        uint16_t ignition_advance_trailing; // 0xFFFFA302 (BTDC, trailing spark in 0.1° units)
+        int16_t ignition_temp_correction;   // 0xFFFFA304 (signed offset from coolant temp)
+        uint16_t ignition_base_from_table;  // 0xFFFFA306 (raw 3D table lookup value)
+        uint8_t ignition_dwell_time_ms;     // 0xFFFFA308 (coil charging time: 1-10ms)
+        uint8_t ignition_output_state;      // 0xFFFFA309 (0=off, 1=charging, 2=firing)
+        uint16_t spark_angle_leading;       // 0xFFFFA30A (rotor angle when spark fires - leading)
+        uint16_t spark_angle_trailing;      // 0xFFFFA30C (rotor angle when spark fires - trailing)
+        uint32_t ignition_event_counter;    // 0xFFFFA30E (total spark events)
+        uint8_t padding_6[6];
+    } ignition_state;
+    Description: Ignition advance, dwell time, and spark timing state
+    Access: RW - Updated by ignition_timing_calc (0xE7F8), read by ignition output routine
+    Related Functions:
+        - ignition_timing_calc (0xE7F8) - Computes advance/dwell from tables
+        - rotor_position_synchronization (0xAF10) - Synchronizes spark timing
+        - ign_output_calc_main - Sets coil driver output
+
+0xFFFFA324 | Closed-Loop Status Flag
+    Type: uint8_t
+    Value: 0x00 = CL inactive (open loop), 0x01 = CL active, 0xFF = CL error/disabled
+    Description: Indicates whether lambda closed-loop feedback is operating
+    Access: RW - Written by lambda_control_closed_loop (0xC508)
+    Related: CAN signal CEL_EN at CAN ID 0x1A4 (diagnostic flag)
+
+================================================================================
+2.3 LAMBDA / CLOSED-LOOP FEEDBACK SUBSYSTEM
+================================================================================
+
+0xFFFFA328–0xFFFFA38C | Lambda Control Block (101 bytes)
+    Type: struct {
+        // PID Control State
+        float setpoint_afr;                 // 0xFFFFA328 (target lambda / AFR: 14.7:1 = 1.0 lambda)
+        float measured_o2_voltage;          // 0xFFFFA32C (primary O2 sensor voltage: 0.0-1.0V)
+        float measured_o2_secondary;        // 0xFFFFA330 (secondary O2 sensor voltage)
+        float error_current;                // 0xFFFFA334 (measured - setpoint)
+
+        // Integral & Derivative Terms
+        float integrator_sum;               // 0xFFFFA338 (accumulated error for I term)
+        float integrator_limit_max;         // 0xFFFFA33C (wind-up protection: +0.5)
+        float integrator_limit_min;         // 0xFFFFA340 (wind-up protection: -0.5)
+        float derivative_prev_error;        // 0xFFFFA344 (for D term calculation)
+
+        // PID Output & Trimming
+        float pid_output;                   // 0xFFFFA348 (final -1.0 to +1.0)
+        float fuel_trim_multiplier;         // 0xFFFFA34C (fuel pulse width adjustment: 0.8-1.2)
+        float fuel_trim_additive;           // 0xFFFFA350 (offset trim in milliseconds)
+
+        // Sensor Health & Status
+        uint8_t o2_primary_status;          // 0xFFFFA354 (0=ok, 1=sensor_heater_open, 2=slow_response)
+        uint8_t o2_secondary_status;        // 0xFFFFA355 (downstream O2 sensor status)
+        uint8_t lambda_mode;                // 0xFFFFA356 (0=open_loop, 1=closed_loop_active, 2=transition)
+        uint8_t controller_state;           // 0xFFFFA357 (0=disabled, 1=enabled, 2=error)
+
+        // Loop Mode & Safety Clamps
+        uint16_t cl_enable_threshold_rpm;   // 0xFFFFA358 (enable CL above this engine speed)
+        uint16_t cl_enable_threshold_temp;  // 0xFFFFA35A (enable CL above this coolant temp)
+        uint8_t padding_7[4];
+    } lambda_pid_block;
+    Description: Complete O2 sensor feedback control for closed-loop fuel trimming
+    Access: RW - Managed exclusively by lambda_control_closed_loop (0xC508)
+    Related Functions:
+        - lambda_control_closed_loop (0xC508) - Main PID controller
+        - throttle_position_classify (0xC460) - Determines if CL eligible
+    CAN Output: Fuel trim sent via CAN ID 0x1A4
+
+0xFFFFA390–0xFFFFA3F8 | Advanced Lambda State (105 bytes)
+    Type: struct {
+        uint16_t o2_sample_rate_hz;         // 0xFFFFA390 (ADC reading frequency)
+        uint8_t cl_enable_hysteresis;       // 0xFFFFA392 (0-5 cycle debounce)
+        uint8_t cl_disable_hysteresis;      // 0xFFFFA393 (0-5 cycle debounce)
+        float lambda_setpoint_cold;         // 0xFFFFA394 (richer mixture during warmup: 0.95)
+        float lambda_setpoint_warm;         // 0xFFFFA398 (stoichiometric: 1.0)
+        uint32_t sample_counter;            // 0xFFFFA39C (total O2 samples processed)
+        float o2_voltage_filter_coeff;      // 0xFFFFA3A0 (digital filter: 0.1-0.9)
+        float fuel_trim_rate_limit;         // 0xFFFFA3A4 (max trim change per cycle: 0.02)
+        uint16_t maximum_trim_allowed;      // 0xFFFFA3A8 (safety max trim: 200% fuel)
+        uint8_t padding_8[6];
+    } lambda_advanced_state;
+    Description: Extended lambda controller state including mode transitions and rate limiting
+    Access: RW - Managed by lambda control subsystem
+
+================================================================================
+2.4 CANDIDATE LAMBDA SAFETY CLAMPS (if not in diagnostics region)
+================================================================================
+
+[If Lambda safety clamps are in RAM rather than ROM, they would occupy:
+ 0xFFFFC0CC–0xFFFFC0D4 | Lambda Safety Clamps (9 bytes)
+    Type: struct { float clamp_max; float clamp_min; uint8_t enabled; }
+    Description: Limits on closed-loop fuel trim for safety
+    Access: RW - Loaded from ROM table at initialization
+]
+
+================================================================================
+2.5 CAN COMMUNICATION STATUS
+================================================================================
+
+0xFFFFA3FA | CAN Init Status Flag
+    Type: uint8_t
+    Value: 0x00 = Not initialized, 0x55 = CAN OK, 0xAA = CAN Error
+    Description: Indicates CAN controller initialization state and health
+    Access: RW - Written by hcan_init_and_status_check (0xD6A0)
+    Related: CAN messages sent via CAN ID 0xC9 (RPM), 0x1A4 (diagnostics)
+
+0xFFFFA3FB | CAN Mailbox Status
+    Type: uint8_t (bitfield)
+    Bits: [7:0] = TXPR (Transmit request flags for 8 mailboxes)
+    Description: CAN controller transmit request status
+    Access: R - Read by CAN interrupt handler, written by CAN scheduler
+
+================================================================================
+================================================================================
+3. KNOCK DETECTION & CONTROL
+Address Range: 0xFFFFA4B4–0xFFFFA571 (190 bytes)
+Purpose: Knock sensor processing and spark retard control
+Access: Read/Write from knock detection task
+================================================================================
+
+0xFFFFA4A4–0xFFFFA4AE | Rev Limiter State (11 bytes)
+    Type: struct {
+        uint16_t current_rpm;              // 0xFFFFA4A4 (filtered engine speed)
+        uint16_t rev_limit_threshold;      // 0xFFFFA4A6 (limit RPM: typically 9000)
+        uint8_t soft_limit_reached;        // 0xFFFFA4A8 (0=no, 1=yes, fuel cut imminent)
+        uint8_t hard_limit_reached;        // 0xFFFFA4A9 (0=no, 1=yes, fuel cut active)
+        uint8_t padding_9[2];
+    } rev_limiter;
+    Description: Rev limiter threshold tracking and fuel cutoff control
+    Access: RW - Managed by rpm_limiter_main (0xF192)
+
+0xFFFFA4B4–0xFFFFA571 | Knock Detection Block (190 bytes)
+    Type: struct {
+        // Per-Cylinder Knock State (2 cylinders × 25 bytes each)
+        struct {
+            uint16_t knock_voltage_raw;     // Raw knock sensor ADC value
+            float knock_magnitude;          // Calculated knock energy (normalized 0.0-1.0)
+            uint8_t knock_detected;         // 0=no knock, 1=knock detected, 2=marginal
+            uint8_t knock_sensitivity;      // Threshold for detection (0-255)
+            uint16_t knock_counter;         // Total knock events (max 65535)
+            uint16_t knock_retard_applied;  // Spark retard in 0.1° units (0-500 = 0-50°)
+            uint16_t knock_recovery_timer;  // Countdown until advance is restored (ms)
+            uint32_t last_knock_timestamp;  // Time of most recent knock event (ms)
+            uint8_t knock_cylinder_id;      // 0 or 1 (which rotor)
+        } cylinder[2];
+
+        // Global Knock State
+        uint8_t knock_detection_enabled;    // 0=disabled, 1=enabled, 2=suspended
+        uint8_t knock_control_mode;         // 0=passive_detect, 1=adaptive_retard
+        uint16_t total_knock_events;        // Sum of all knock detections
+        uint8_t padding_10[8];
+    } knock_state;
+    Description: Knock sensor processing including per-cylinder detection and adaptive spark retard
+    Access: RW - Managed by knock_detection_processing (0xF770)
+    Related Functions:
+        - knock_detection_processing (0xF770) - Main knock detection algorithm
+        - ignition_timing_calc (0xE7F8) - Applies knock retard to advance values
+    ROM Tables:
+        - 0x7A450 - Knock Sensitivity Rotor #1 (3D table: RPM × Load)
+        - 0x7A4D8 - Knock Sensitivity Rotor #2 (3D table: RPM × Load)
+        - 0x7A318 - Knock Voltage To Magnitude (2D table: Volts to energy)
+
+0xFFFFA564 | Knock Counter
+    Type: uint16_t
+    Value: Total knock events detected since startup
+    Description: Running counter for diagnostic purposes (incremented by knock_detection_processing)
+    Access: RW - Incremented by knock detection, read by diagnostic routines
+    CAN Output: Can be reported via OBD-II service 0x22 (read data)
+
+================================================================================
+================================================================================
+4. IDLE SPEED CONTROL
+Address Range: 0xFFFFA600–0xFFFFA6FF (256 bytes)
+Purpose: Idle air control valve and target RPM management
+Access: Read/Write from idle control task
+================================================================================
+
+0xFFFFA680 | Idle Target RPM
+    Type: uint16_t
+    Value: Target RPM during idle (typically 650-1000 RPM)
+    Description: Setpoint for idle speed control feedback loop
+    Access: RW - Loaded from calibration tables based on coolant temp/engine state
+    Related ROM Tables:
+        - 0x6E864-0x6E890 - Idle Target A (RPM vs Temp)
+        - 0x6E890-0x6E8C0 - Idle Target B
+        - 0x6E8C0-0x6E8F8 - Idle Target C
+        - 0x6E8F8-0x6E950 - Idle Target D
+        - 0x6E950-0x6E998 - Idle Target E
+        - 0x6E998-0x6E9B0 - Idle Target F
+        - 0x6E9B0-0x6E9CC - Idle Target G
+        - 0x6E9CC-0x6E9DC - Idle Target H
+        - 0x6E9DC-0x6EA08 - Idle Target I
+
+0xFFFFA681–0xFFFFA6FF | Reserved for Idle Control
+    Type: struct { float pid_integrator; float pid_derivative; uint8_t iac_position; }
+    Description: PID controller state for idle air control, IAC valve position
+    Access: RW - Managed by idle control routine (referenced but not yet named in IDA)
+
+================================================================================
+================================================================================
+5. Rev LIMITER STATE
+Address Range: 0xFFFFA4A4–0xFFFFA4AE (already documented in Knock section 2.5)
+================================================================================
+
+See section 2.5 above for rev limiter state variables.
+
+0xFFFFA386 | Fuel Cutoff Flag (rev limiter kill)
+    Type: uint8_t (bitfield)
+    Bits: [0] = Soft limit fuel cut, [1] = Hard limit fuel cut
+    Description: Disables fuel injectors when RPM exceeds threshold
+    Access: W - Set by rpm_limiter_fuel_cutoff (0xC59E), read by fuel injection output
+    Value: 0x00 = normal fuel, 0x01 = cutoff active
+
+0xFFFFA374–0xFFFFA37A | RPM Error & Raw RPM for Rev Limiter (7 bytes)
+    Type: struct {
+        int16_t rpm_error;               // 0xFFFFA374 (current_rpm - rev_limit_threshold)
+        uint16_t raw_rpm_filtered;       // 0xFFFFA376 (smoothed engine speed)
+        uint8_t rpm_accel_rate;          // 0xFFFFA378 (RPM/sec for fuel enrichment)
+        uint8_t padding_11[2];
+    }
+    Description: RPM feedback for rev limiter threshold crossing detection
+    Access: RW - Updated by rotor synchronization, read by rpm_limiter_main
+    Related: rpm_limiter_main (0xF192)
+
+================================================================================
+================================================================================
+6. DIAGNOSTICS & CALIBRATION CACHE
+Address Range: 0xFFFFC000–0xFFFFD9FF (6656 bytes)
+Purpose: Fault detection, DTC storage, and runtime calibration caching
+Access: Read/Write from diagnostic task
+================================================================================
+
+0xFFFFC0CC–0xFFFFC0D4 | Lambda Safety Clamps (9 bytes)
+    Type: struct {
+        float lambda_clamp_max;            // 0xFFFFC0CC (maximum fuel trim: 1.5 = 150%)
+        float lambda_clamp_min;            // 0xFFFFC0D0 (minimum fuel trim: 0.5 = 50%)
+        uint8_t clamp_enabled;             // 0xFFFFC0D4 (0=off, 1=on)
+    }
+    Description: Runtime limits for closed-loop fuel trimming to prevent runaway conditions
+    Access: R - Loaded once at startup from ROM table
+    Related: lambda_control_closed_loop (0xC508)
+
+0xFFFFD96C | DTC Global Enable Mask
+    Type: uint8_t
+    Value: Bitfield indicating which fault categories are monitored
+    Bits: [0]=Sensor faults, [1]=Fuel/Ignition faults, [2]=Knock faults, [3]=CAN/OBD faults
+    Description: Global diagnostic trouble code enable/disable flag
+    Access: RW - Written during boot initialization, can be modified by diagnostics service
+
+0xFFFFD970–0xFFFFD9FF | DTC Storage Array (144 bytes, max 18 DTCs)
+    Type: struct {
+        uint16_t dtc_code;                 // DTC number (P0030, C0100, U1200, etc.)
+        uint8_t status_flags;              // Test failed, confirmed, pending, etc.
+        uint8_t frame_counter;             // Freeze frame number (0-7)
+    } dtc_table[18];
+    Description: Stored diagnostic trouble codes with freeze frame data
+    Access: RW - Managed by pcm_fault_check_and_clear (0xDDF0), read by OBD-II services
+    Related DTC Classes (from rx8_defs.xml, 120+ total):
+        P0030–P0999: Powertrain DTCs
+        C0100–C0999: Chassis DTCs
+        U1200–U1999: Network DTCs
+        B0000–B0999: Body DTCs
+
+0xFFFF6000–0xFFFFC000 | Reserved Diagnostic Cache
+    Type: Raw byte buffer
+    Description: Additional space for extended DTC storage, freeze frames, and runtime metrics
+    Access: RW - Allocated but not yet fully utilized in this firmware revision
+
+================================================================================
+================================================================================
+7. RTOS & SYSTEM CONTROL
+Address Range: 0xFFFFDFA0–0xFFFFDFFF (96 bytes)
+Purpose: Stack, reset flags, and system control
+Access: Kernel-level access only
+================================================================================
+
+0xFFFFDFA0 | Stack Pointer Base (Top of RAM)
+    Type: Special Register (SP)
+    Value: Decrements from 0xFFFFDFA0 as stack grows downward
+    Description: Renesas SH-2A stack grows from high to low memory
+    Access: Automatic via CPU
+
+0xFFFFDFFC | Warm-Reset Magic Word
+    Type: uint32_t
+    Value: 0x5AA5A55A = warm reset signature, other values = cold reset
+    Description: Distinguishes cold boot (power-on) from warm restart (watchdog/software reset)
+    Access: R - Checked by reset_handler (0x8B8) during boot
+    Related: wdt_init (0x572) - watchdog timer configuration
+
+0xFFFFDFF0–0xFFFFDFFB | System Status Flags
+    Type: struct {
+        uint8_t watchdog_active;           // 0xFFFFDFF0 (0=disabled, 1=enabled)
+        uint8_t interrupt_priority_level;  // 0xFFFFDFF1 (0-15, higher = more masked)
+        uint8_t exception_code;            // 0xFFFFDFF2 (0=none, others = exception type)
+        uint8_t fpu_context_valid;         // 0xFFFFDFF3 (0=stale, 1=current)
+        uint32_t watchdog_counter;         // 0xFFFFDFF4 (counts down, resets at 0)
+        uint8_t padding_12[4];
+    }
+    Description: System-level status and exception tracking
+    Access: RW - Managed by kernel, interrupt handlers, and WDT service routine
+
+0xFFFFA3F9–0xFFFFA3FC | Status Flags & FPU Context Control
+    Type: struct {
+        uint8_t checksum_failure_flag;     // 0xFFFFA3F9 (RAM/ROM checksum bad)
+        uint8_t reserved_status_1;         // 0xFFFFA3FA
+        uint8_t reserved_status_2;         // 0xFFFFA3FB
+        uint8_t fpu_control_register;      // 0xFFFFA3FC (FPU context save/restore enable)
+    }
+    Description: System fault indicators and FPU state control
+    Access: RW - Written by system initialization routines
+    Related Functions:
+        - memory_checksum_validator_runner (0xD704) - Sets checksum_failure_flag
+        - reset_all_status_flags (0xD666) - Clears all flags
+        - fpu_control_reset (0xD9A2) - Clears FPU control
+
+0xFFFF8030 | Ignition Switch Status (I/O Register)
+    Type: uint8_t
+    Value: 0=ACC, 1=RUN, 2=START, 3=OFF
+    Description: Key position from body control module
+    Access: R - Read by read_ign_switch_status (0xAD3C)
+    Related: engine_startup_initialization (0xAD5A)
+
+0xFFFF9F18 | I/O Port Read/Write Register
+    Type: uint8_t
+    Description: Generic port data register for GPIO operations
+    Access: RW - Used by port_read_write_helper (0xD3D4) for debug/diagnostic I/O
+    Related: PHDR, PGDR (engine control output ports)
+
+================================================================================
+================================================================================
+SUMMARY TABLE - ALL RAM VARIABLES BY FUNCTIONAL AREA
+================================================================================
+
+SENSORS/ADC:
+    0xFFFF9F00–0xFFFF9F7F   Sensor State Array (4 sensors × 32 bytes)
+    0xFFFF9F9C              Engine Speed (RPM value)
+    0xFFFF9F80–0xFFFF9F8F   Reserved ADC Buffer
+    0xFFFF9F90–0xFFFF9FAB   ADC Result Cache
+    0xFFFFA010–0xFFFFA0C7   Sensor Config (4 channels × 40 bytes)
+
+FUEL INJECTION:
+    0xFFFFA100–0xFFFFA167   Fuel Calculation State
+    0xFFFFA168–0xFFFFA16F   Fuel Cutoff State
+    0xFFFFA170–0xFFFFA18B   CAN Message Buffer
+    0xFFFFA18C–0xFFFFA1BF   CAN/Task Control Flags
+    0xFFFFA220–0xFFFFA22A   Per-Rotor Fuel Flags
+
+IGNITION:
+    0xFFFFA1D8–0xFFFFA208   Rotor Position & Timing Data
+    0xFFFFA300–0xFFFFA323   Ignition Timing State
+
+LAMBDA CLOSED-LOOP:
+    0xFFFFA1C0–0xFFFFA1C9   Task State Flags
+    0xFFFFA328–0xFFFFA38C   Lambda Control Block (PID state)
+    0xFFFFA390–0xFFFFA3F8   Advanced Lambda State
+
+KNOCK DETECTION:
+    0xFFFFA4B4–0xFFFFA571   Knock Detection Block (per-cylinder)
+    0xFFFFA564              Knock Counter
+
+REV LIMITER:
+    0xFFFFA4A4–0xFFFFA4AE   Rev Limiter State
+    0xFFFFA374–0xFFFFA37A   RPM Error & Filtered RPM
+    0xFFFFA386              Fuel Cutoff Flag
+
+IDLE CONTROL:
+    0xFFFFA680              Idle Target RPM
+
+CAN/DIAGNOSTICS:
+    0xFFFFA3FA              CAN Init Status
+    0xFFFFA3FB              CAN Mailbox Status
+    0xFFFFC0CC–0xFFFFC0D4   Lambda Safety Clamps
+    0xFFFFD96C              DTC Global Enable Mask
+    0xFFFFD970–0xFFFFD9FF   DTC Storage Array
+
+RTOS/SYSTEM:
+    0xFFFFA3F9–0xFFFFA3FC   Status Flags & FPU Control
+    0xFFFFDFA0              Stack Pointer Base
+    0xFFFFDFFC              Warm-Reset Magic Word
+    0xFFFFDFF0–0xFFFFDFFB   System Status Flags
+    0xFFFF8030              Ignition Switch Status (I/O)
+    0xFFFF9F18              Generic Port I/O Register
+
+================================================================================
+COMPLETE FUNCTION CROSS-REFERENCE (by subsystem)
+================================================================================
+
+FUEL INJECTION:
+    fuel_calc_per_rotor (0x9534) - RW 0xFFFFA100-0xFFFFA167
+    rotor_fuel_calc_dispatcher (0xB57A) - RW 0xFFFFA220-0xFFFFA22A
+    fuel_injector_pulse_calc (0x10620) - RW 0xFFFFA100-0xFFFFA167
+    injector_pulse_width_calc (0xB2E4) - RW 0xFFFFA114-0xFFFFA118
+    fuel_calc_entry (0x9528) - RW 0xFFFFA100-0xFFFFA167
+    atu_injector_enable_update (0xB3AA) - RW 0xFFFFA220-0xFFFFA22A
+
+IGNITION & ROTOR SYNC:
+    rotor_position_synchronization (0xAF10) - RW 0xFFFFA1D8-0xFFFFA208
+    ignition_timing_calc (0xE7F8) - RW 0xFFFFA300-0xFFFFA323
+    configure_atuii_timers (0xADD2) - RW 0xFFFFA1D8-0xFFFFA208
+
+LAMBDA/O2 FEEDBACK:
+    lambda_control_closed_loop (0xC508) - RW 0xFFFFA328-0xFFFFA38C
+    throttle_position_classify (0xC460) - RW 0xFFFFA328-0xFFFFA38C
+    adc_read_and_merge_flags (0x71AC) - RW 0xFFFF9F80-0xFFFF9F9F
+
+KNOCK DETECTION:
+    knock_detection_processing (0xF770) - RW 0xFFFFA4B4-0xFFFFA571
+
+RPM LIMITER:
+    rpm_limiter_main (0xF192) - RW 0xFFFFA4A4-0xFFFFA37A
+    rpm_limiter_fuel_cutoff (0xC59E) - RW 0xFFFFA386
+
+TASK SCHEDULING:
+    task_scheduler (0xAB06) - RW 0xFFFFA1C0-0xFFFFA1C9
+    task_state_mapper (0xAC94) - R 0xFFFFA1C0-0xFFFFA1C9
+    main_periodic_task (0xDD76) - RW 0xFFFFA1C0-0xFFFFA1C9
+    task_scheduler_check_and_sync (0xAECC) - RW 0xFFFFA1C0-0xFFFFA208
+
+CAN COMMUNICATION:
+    can_msg_buffer_read_next (0xA436) - RW 0xFFFFA170-0xFFFFA18B
+    can_schedule_tx_msg_with_timing (0xC98A) - RW 0xFFFFA170-0xFFFFA18B
+    hcan0_mailbox_rotate_enqueue (0xA608) - RW 0xFFFFA170-0xFFFFA18B
+    hcan_init_and_status_check (0xD6A0) - W 0xFFFFA3FA
+    can_periodic_task_handler (0xA57C) - RW 0xFFFFA170-0xFFFFA18B
+
+SENSOR PROCESSING:
+    sensor_main_process (0x9070) - RW 0xFFFF9F00-0xFFFFA0C7
+    adc_read_channel (0x70D0) - RW 0xFFFF9F80-0xFFFF9F9F
+    adc_single_convert (0x720E) - RW 0xFFFF9F80-0xFFFF9F9F
+
+DIAGNOSTICS:
+    pcm_fault_check_and_clear (0xDDF0) - RW 0xFFFFD970-0xFFFFD9FF
+    checksum_failure_flag_check (0xD650) - R 0xFFFFA3F9
+    reset_all_status_flags (0xD666) - W 0xFFFFA3F9-0xFFFFA3FC
+    memory_checksum_validator_runner (0xD704) - W 0xFFFFA3F9
+
+BOOT/INITIALIZATION:
+    reset_handler (0x8B8) - RW 0xFFFFDFFC (warm reset magic)
+    cold_start_ram_init (0x5B0) - W all RAM 0xFFFF6000-0xFFFFD9FF
+    pcm_init_sequence (0xDD30) - W 0xFFFFA1C0-0xFFFFA1C9
+    engine_startup_initialization (0xAD5A) - RW 0xFFFF8030 (ign switch)
+
+FPU/SYSTEM:
+    fpu_control_reset (0xD9A2) - W 0xFFFFA3FC
+    fpu_context_save_restore (0xD97C) - RW 0xFFFFA3FC
+    watchdog_service (0x11E8) - RW 0xFFFFDFF4
+
+================================================================================
+ACCESS PATTERNS & TIMING NOTES
+================================================================================
+
+1. REAL-TIME CONSTRAINTS
+   - Sensor state (0xFFFF9F00-0xFFFFA0C7): Read/Write every ADC cycle (~10ms)
+   - Fuel calculation (0xFFFFA100-0xFFFFA167): Updated every 25-50ms
+   - Ignition timing (0xFFFFA300-0xFFFFA323): Updated every 10-50ms
+   - Lambda PID (0xFFFFA328-0xFFFFA38C): Updated every 100-200ms
+   - CAN messages (0xFFFFA170-0xFFFFA18B): Queued every 100-300ms
+   - Knock detection (0xFFFFA4B4-0xFFFFA571): Per-cylinder (~2.5ms at 6000 RPM)
+
+2. CONCURRENCY HAZARDS
+   - Task state flags (0xFFFFA1C0-0xFFFFA1C9) require atomic reads/writes
+   - Rotor timing state (0xFFFFA1D8-0xFFFFA208) accessed by interrupt + main task
+   - Lambda PID state (0xFFFFA328-0xFFFFA38C) requires consistent snapshot
+
+3. INITIALIZATION ORDER
+   All RAM cleared by cold_start_ram_init (0x5B0) at power-on
+   Per-variable initialization in pcm_init_sequence (0xDD30) and main_init
+
+4. CRASH/WATCHDOG RECOVERY
+   Warm reset check at 0xFFFFDFFC distinguishes cold vs warm resets
+   Checksum validation at 0xFFFFA3F9 detects RAM corruption
+   Status flags at 0xFFFFA3F9-0xFFFFA3FC indicate system health
+
+================================================================================
+END OF RAM MAP DOCUMENTATION
+================================================================================

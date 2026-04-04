@@ -1,0 +1,1203 @@
+================================================================================
+MAZDA RX-8 S1 PCM FUEL INJECTION AND IGNITION TIMING CONTROL CHAINS
+Complete End-to-End Documentation
+================================================================================
+
+Firmware: 60E1D400.bin (N3J1EL - RX-8 S1 EU 231hp MT)
+Architecture: Renesas SH7055 (SH-2A), Big-Endian
+Analysis Date: 2026-04-04
+Scope: Complete functional tracing of fuel and ignition subsystems
+
+TERMINOLOGY NOTE:
+  Some variable/function names in this document contain "VVT" or "boost".
+  The RX-8 is naturally aspirated with a Wankel rotary engine (NO valves,
+  NO turbo). These names are inherited from the IDA database and likely
+  reflect Mazda's generic ECU codebase shared across piston-engine platforms.
+  In the RX-8 context:
+    "VVT" → likely refers to eccentric shaft phase or intake port timing
+    "boost" → likely refers to manifold pressure or enrichment scalars
+  These labels should NOT be taken literally.
+
+================================================================================
+PART 1: FUEL INJECTION CONTROL CHAIN
+================================================================================
+
+OVERVIEW:
+The RX-8's fuel injection system controls 4 fuel injectors (2 primary mounted on
+each rotor housing, 2 secondary positioned for transition and cruise enrichment).
+The system operates in SEQUENTIAL mode, precisely timed to open during intake stroke.
+
+INPUT SENSORS:
+  - MAF (Mass Air Flow) sensor @ 0xFFFFAA10 (load scaling factor)
+  - Coolant temperature (CLT) @ 0xFFFFAAD8 (fuel enrichment gate)
+  - Intake pressure (MAP) @ 0xFFFFAA10 (secondary fuel correction)
+  - Engine RPM @ 0xFFFFAA24 (injector pulse width scalar)
+  - Throttle Position (TPS) @ 0xFFFFB47C (accel enrichment/deceleration cutoff)
+  - Oxygen sensors (O2) @ 0xFFFFA7C8 (closed-loop trim)
+
+PRIMARY PROCESSING STAGES:
+
+--------------------------------------------------------------------------------
+STAGE 1: MAIN FUEL CONTROL PIPELINE (0x22094, 48 bytes)
+--------------------------------------------------------------------------------
+Entry Point: main_fuel_control_pipeline_22094
+
+Sequence:
+  1. Task priority check via task_check_priority_level (0x3920)
+     - Ensures fuel calc runs at high priority (prevents jitter)
+
+  2. Rotary combustion chamber setup (0x20008) [Wankel-specific]
+     - Configures dual-rotor phase management
+     - Sets up leading/trailing spark variables for 2 combustion cycles
+
+  3. Sensor enable validation (0x1FD74)
+     - Verifies MAF/MAP sensor validity
+     - Disables fuel if critical sensors fail (limp mode)
+
+  4. Rotary engine combustion analysis (0x1FD8E)
+     - Analyzes rotor position relative to injection timing windows
+     - Calculates phase offset for sequential fire
+
+  5. Manifold pressure calculation (0x21190)
+     - Converts raw MAP voltage to pressure value
+     - Updates 0xFFFFAA10 with load scaling
+
+  6. Sequential fuel injection control (0x211DC, 500 bytes) [MAIN FUEL CALC]
+     - CORE FUEL PULSE WIDTH CALCULATOR
+     - See detailed breakdown below
+
+  7. Adaptive ignition table update (0x213D0)
+     - Adjusts timing tables based on fuel octane rating
+
+  8. Fuel injection duty cycle calculation (0x211CC, 16 bytes)
+     - Converts pulse width to injector duty cycle percentage
+     - Used for thermal protection cutoff
+
+  9. Complex FPU compare (0x31650)
+     - Validates fuel calculations against safety boundaries
+
+  10. Transmission load control (0x1DDB0)
+      - Reduces fuel during downshift transients
+
+  11. Timing advance control (0x1D2B0)
+      - Applies knock retard to fuel enrichment
+
+  12. Fuel trim update (0x1E5F8)
+      - Long-term learning adjustments
+
+  13. Ignition timing output (0x1E6B6)
+      - Finalizes ignition control
+
+  14. Error condition check (0x1E794)
+      - Validates entire fuel/ignition state
+
+  15. Wankel rotary control (0x1E820)
+      - Dual-rotor synchronization
+
+  16. Sensor validation monitor (0x1F078)
+      - Continuous sensor diagnostic
+
+  17. Rotor position fault check (0x1F786)
+      - Detects rotor sync errors
+
+  18. Adaptive control logic (0x1F38C)
+      - Feed-forward and feedback tuning
+
+  19. Fuel trim correction (0x1F844)
+      - Fine-tunes mixture based on previous cycle errors
+
+  20. Coolant temp boundary check (0x1F99A)
+      - Prevents excessive enrichment when cold
+
+  21. Combustion control loop (0x1F8E0)
+      - Real-time mixture optimization
+
+  22. Engine load control (0x1FA24)
+      - Volumetric efficiency compensation
+
+  23. Ignition timing safety check (0x1FAEA)
+      - Validates timing is within safe window
+
+  24. Oil temperature burn control (0x1FC32)
+      - Leans mixture if oil temps high
+
+  25. Knock sensor voltage limit check
+      - Prevents false knock signals
+
+  26. Idle speed range validator
+      - Ensures stable idle mixture
+
+  27. Cold start RPM limiter
+      - Prevents over-enrichment at startup
+
+Exit: task_conditional_dispatch
+
+Output: Sets 0xFFFFB290 (primary injector pulse width)
+        Sets 0xFFFFB2AC (secondary injector pulse width)
+        Sets 0xFFFFB2B2 (primary injector enable flag)
+        Sets 0xFFFFB2B3 (secondary injector enable flag)
+
+--------------------------------------------------------------------------------
+STAGE 2: SEQUENTIAL FUEL INJECTION CALCULATOR (0x211DC, 500 bytes)
+================================================================================
+
+THE CORE FUEL PULSE WIDTH CALCULATOR
+
+This function synthesizes sensor inputs and ROM tables to compute final
+injector pulse width in milliseconds. It's called every combustion cycle
+(every 180 crank degrees for Wankel with 2 rotors).
+
+INPUTS LOADED AT ENTRY:
+  FR15 = MAF sensor voltage (0xFFFFBF24) [Raw sensor reading]
+  FR14 = Secondary injector enable flag (0xFFFFB35C)
+  R12  = Primary injector flag from previous cycle (0xFFFFA444)
+  R11  = Secondary injector flag from previous cycle (0xFFFFA445)
+  R4   = Complement of primary flag (sensor validity check)
+
+GATE 1 - SENSOR VALIDITY CHECK:
+  IF secondary fuel disabled (0xFFFFBFAA=0) THEN
+    DISABLE secondary injection (set 0xFFFFB2A8 = 0)
+    SKIP to GATE 2
+
+  ELSE IF secondary fuel control active (0xFFFFB2B2=1) THEN
+    IF primary flag set (0xFFFFA444≠0) THEN
+      ENABLE secondary (set 0xFFFFB2A8 = 1)
+    ELSE IF secondary flag set (0xFFFFA445≠0) THEN
+      ENABLE secondary (set 0xFFFFB2A8 = 1)
+
+GATE 2 - SENSOR ENABLE VALIDATION:
+  IF sensor diagnostic active (0xFFFFAE97≠1) THEN
+    RETURN (skip all fuel calculation - limp mode)
+
+  IF VVT control not enabled (0xFFFFB366≠1) THEN
+    RETURN (skip - intake cam not synchronized)
+
+  IF complement shift result invalid THEN
+    RETURN (skip - sensor error)
+
+GATE 3 - ENGINE STATE VALIDATION:
+  IF ignition start sequence not complete (0xFFFFD299≠0) THEN
+    RETURN (skip - engine still cranking)
+
+  IF fuel pressure low (0xFFFFD12E≠0) THEN
+    RETURN (skip - pump hasn't primed)
+
+GATE 4 - LOAD BOUNDARY CHECK:
+  Load MAF thresholds from ROM:
+    MIN load = ROM[0x72AFC] (typically 0.3V - idle)
+    MAX load = ROM[0x72B00] (typically 4.8V - WOT)
+
+  IF FR15 (MAF voltage) < MIN_load THEN
+    RETURN (skip - below idle threshold)
+
+  IF FR15 > MAX_load THEN
+    RETURN (skip - sensor saturated, use default)
+
+GATE 5 - SECONDARY FUEL COUNTER CHECK:
+  IF secondary fuel enabled (0xFFFFB2A8=1) THEN
+    Load secondary counter limit from ROM[0x72AF4]
+    IF current counter (0xFFFFB2AC) >= limit THEN
+      RETURN (skip - secondary counter exhausted)
+
+GATE 6 - TEMPERATURE CORRECTION CHECK:
+  Load temperature threshold from ROM[0x72B04]
+  Load temperature scalar from ROM[0x72B08]
+
+  CALL timing_correction_3EE0A(temp_scalar) @ 0xFFFF80E4
+
+  IF result > threshold THEN
+    RETURN (skip - fuel enrichment excessive)
+
+GATE 7 - MAIN FUEL CALCULATION:
+
+  IF FR15 < ROM[0x72B00] (below max load) THEN
+    PRIMARY FUEL PATH:
+      Load minimum offset from ROM[0x72B14]
+      FR4 = (FR14 from 0xFFFFB364) - ROM[0x72B14]
+      Set primary enable flag = 1
+
+  ELSE (FR15 >= max load):
+    SECONDARY FUEL PATH:
+      Load primary counter from ROM[0x72AFA]
+      Load secondary counter from ROM[0x72B0C]
+
+      IF primary counter >= ROM[0x72AFA] THEN
+        Use aggressive fuel curve from ROM[0x72B18]
+      ELSE
+        Use conservative fuel curve from ROM[0x72B1C]
+
+      Calculate secondary pulse width
+      FR4 += secondary offset
+      Set secondary enable flag = 2
+
+GATE 8 - FUEL LIMITER:
+  Load min/max safe values from ROM[0x72B10, 0x72B0C]
+  Call fpu_compare_and_select(FR5=min, FR6=max, FR4=calculated)
+  Return clipped value to 0xFFFFB290
+
+OUTPUT:
+  0xFFFFB290 = Final primary injector pulse width (milliseconds)
+  0xFFFFB2AC = Secondary injector counter
+  0xFFFFB2B2 = Primary injector enable flag (0=off, 1=primary, 2=secondary)
+  0xFFFFB2B3 = Secondary injector enable flag (previous cycle)
+
+ROM TABLES REFERENCED:
+  0x72AFC = MAF minimum threshold (V)
+  0x72B00 = MAF maximum threshold (V)
+  0x72AF4 = Secondary fuel counter limit
+  0x72B04 = Temperature correction threshold
+  0x72B08 = Temperature correction scalar
+  0x72B14 = Minimum fuel offset
+  0x72B18 = Aggressive fuel curve (high load)
+  0x72B1C = Conservative fuel curve (normal load)
+  0x72B10 = Maximum fuel safety limit
+  0x72B0C = Minimum fuel safety limit
+
+CYCLE TIME: ~3-5ms per calculation (depends on gate skips)
+
+--------------------------------------------------------------------------------
+STAGE 3: FUEL INJECTION BASIC CONTROL (0x24038, 508 bytes)
+================================================================================
+
+HIGH-LEVEL FUEL ENRICHMENT CALCULATOR
+
+Responsible for applying transient and steady-state corrections to base
+fuel calculation. Handles cold start enrichment, acceleration enrichment,
+and deceleration fuel cutoff.
+
+INPUTS:
+  FR4 = acceleration enrichment flag (0xFFFFB5B8)
+  R3  = timing correction table pointer (0x6FA2E+0x74)
+  R11 = MAF sensor status (0xFFFFA41C)
+
+ENRICHMENT LOGIC:
+
+COLD START GATE (0xFFFFCE6E):
+  IF cold start mode active (0xFFFFCE6E=1) THEN
+    IF cold start fuel enabled (0xFFFFB4A6=1) THEN
+      IF MAF sensor valid (0xFFFFA41C≠0) THEN
+        Load cold start enrichment from ROM[0x6AD20]
+        CALL fpu_sub_float(0xFFFFAA10 - ROM[0x6AD20])
+        Store result to 0xFFFFB490 (cold start offset)
+
+IDLE ENRICHMENT:
+  IF idle speed control active (0xFFFFB4A5=1) THEN
+    IF not in safe mode (0xFFFFCE6E=0) THEN
+      IF TPS below idle threshold (0xFFFFA428=0) THEN
+        IF accumulated offset positive (0xFFFFB490>0) THEN
+          Add offset to base fuel
+          Check for overflow using saturated arithmetic
+
+TRANSIENT GATES (6 parallel checks):
+
+  GATE A: ACCEL ENRICHMENT (0xFFFFCCFB=1)
+    Load accel fuel from ROM[0x6FBD8 + offset]
+    Multiply by load scalar (FR14)
+    Add to base pulse width (0xFFFFB474)
+    CALL timing_correction_3EE0A(0xFFFF80B4)
+    Store to 0xFFFFB47C
+
+  GATE B: DECEL FUEL CUTOFF (0xFFFFCCFC=1)
+    Load deceleration fuel from ROM[0x6FB8C]
+    Apply directly (cutoff mode)
+    Store to 0xFFFFB468
+
+  GATE C: SECONDARY FUEL TRANSITION (0xFFFFCCFD=1)
+    Load secondary enrichment from ROM[0xFFFCCC8]  [UNVERIFIED: address may be malformed]
+    Add to primary offset
+    Calculate FR15 + ROM[0xFFCCC8]  [UNVERIFIED: address may be malformed]
+    Store combined result
+
+  GATE D: LOAD-BASED FUEL (0xFFFFCCEC=1)
+    Load high-load fuel from ROM[0x6FBD8]
+    Add secondary offset from ROM[0x6FB24]
+    Store both components (primary+secondary)
+
+  GATE E: THERMAL FUEL CONTROL
+    Load thermal fuel from ROM[0x6FBD8 + temp_offset]
+    Apply temperature-based scaling
+
+  GATE F: ENGINE STATE FUEL
+    Load engine state fuel from ROM[0x6FBD8]
+    Apply state transition scaling
+
+FINAL LIMITER:
+  call fpu_compare_and_select(fr5=min, fr6=max, fr4=calculated)
+  Clamp calculated fuel to safe range
+  Store final result to 0xFFFFB47C
+
+OUTPUT:
+  0xFFFFB47C = Transient-corrected injector pulse width (ms)
+  0xFFFFB490 = Cold start enrichment offset
+  0xFFFFB493 = Primary injection enable flag
+  0xFFFFB4A6 = Cold start mode status
+
+ROM TABLES:
+  0x6AD20 = Cold start enrichment curve (RPM × temp dependent)
+  0x6FBD8 = Base fuel pulse width table (RPM × load 2D)
+  0x6FB8C = Deceleration fuel cutoff table
+  0x6FBD8 = Accel enrichment curve
+  0x6FB24 = Secondary fuel transition curve
+
+CYCLE TIME: ~2-3ms
+
+--------------------------------------------------------------------------------
+STAGE 4: MAF SENSOR SCALING AND CORRECTION (0x22334, 194 bytes)
+================================================================================
+
+INTAKE CHARGE CONTROL - MASS AIR FLOW TO VOLUMETRIC EFFICIENCY
+
+Converts raw MAF sensor voltage to mass airflow (g/s), then calculates
+volumetric efficiency for fuel table lookups.
+
+INPUT:
+  MAF sensor raw ADC value (0xFFFFBF24) [0-5V range, digitized to 0-1023]
+
+SCALING STAGES:
+
+1. RAW SENSOR CONDITIONING:
+   Load MAF sensor linear scaling from ROM[0x6FB18] (192 byte axis array)
+   CALL interp_linear_u16_to_float with MAF_ADC_value
+   Output: MAF in units of g/min
+   Store to 0xFFFFAA10
+
+2. VOLUMETRIC EFFICIENCY LOOKUP:
+   Load VE table base address from ROM[0x6D6B0] (80-byte RPM axis)
+   Load VE table base address from ROM[0x6D700] (72-byte load axis)
+
+   CALL table_2d_interpolate(RPM_axis, Load_axis, VE_table @ 0x6D748)
+   Input: RPM scalar (0xFFFFA424) + Load scalar (0xFFFFAA10)
+   Output: Volumetric efficiency 0.0-1.0 (100% = full air charge)
+   Store to 0xFFFFAA18
+
+3. AIRFLOW CALCULATION:
+   airflow (g/s) = (VE × RPM × displacement) / 120
+   displacement = 1.3L for Renesis (2 rotors × 654cc)
+   Calculate mass airflow in grams per cycle
+   Store to 0xFFFFAA1C
+
+4. TEMPERATURE COMPENSATION:
+   Load coolant temperature from 0xFFFFAAD8
+   Load temperature correction curve from ROM[0x6FB18 + 0x100]
+   CALL table_1d_interpolate(coolant_temp)
+   Apply multiplicative correction to airflow
+   Store to 0xFFFFAA20
+
+5. INTAKE PRESSURE COMPENSATION:
+   Load intake manifold pressure from 0xFFFFAA10
+   Load pressure correction curve from ROM[0x6FB18 + 0x200]
+   Calculate pressure density correction factor
+   Apply to final airflow
+   Store corrected airflow to 0xFFFFAA28
+
+OUTPUT:
+  0xFFFFAA10 = Load scaling factor (used by fuel calc)
+  0xFFFFAA18 = Volumetric efficiency (0.0-1.0)
+  0xFFFFAA1C = Mass airflow (g/s)
+  0xFFFFAA20 = Temperature-corrected airflow
+  0xFFFFAA28 = Pressure-corrected airflow
+
+ROM TABLES:
+  0x6FB18 = MAF sensor scaling axis (192 bytes, 0-5V mapping)
+  0x6FBD8 = VE lookup table (360 bytes, 10×9 RPM/load grid)
+  0x6D748 = Ignition timing leading base table (referenced for load)
+
+CALL CHAIN:
+  main_fuel_control → intake_charge_control_22334
+                   → interp_linear_u16_to_float
+                   → table_2d_interpolate
+                   → (fpu_multiply_accumulate, fpu_divide)
+
+CYCLE TIME: ~4-6ms (includes all table lookups)
+
+================================================================================
+PART 2: IGNITION TIMING CONTROL CHAIN
+================================================================================
+
+OVERVIEW:
+The RX-8 Wankel engine has dual combustion chambers with independent spark
+control. Each rotor requires LEADING and TRAILING plugs:
+  - LEADING: 10-15 BTDC (main flame propagation)
+  - TRAILING: 40-60 ATDC (cleanup combustion, emissions)
+
+The ignition system controls dwell time (primary coil charging) and advance
+time (spark firing relative to TDC).
+
+INPUT SENSORS:
+  - Engine RPM @ 0xFFFFA424 (ignition timing curve selection)
+  - Manifold pressure (load) @ 0xFFFFAA10 (timing advance modifier)
+  - Coolant temperature @ 0xFFFFAAD8 (warm-up retard)
+  - Knock sensors (2×) @ 0xFFFFB5AA, 0xFFFFB5CC (detonation detection)
+  - Throttle position @ 0xFFFFA428 (acceleration advance)
+  - Oil temperature @ 0xFFFFBCxx (thermal protection)
+
+CONTROL OUTPUTS:
+  - 0xFFFFA458 = Leading spark advance (rotor A, degrees BTDC)
+  - 0xFFFFA448 = Trailing spark advance (rotor A, degrees ATDC)
+  - 0xFFFFA454 = Secondary timing offset
+  - 0xFFFFA480 = Coil dwell time (primary charging duration, ms)
+
+PRIMARY PROCESSING STAGES:
+
+--------------------------------------------------------------------------------
+STAGE 1: IGNITION TIMING PIPELINE (0x2204C, 72 bytes)
+--------------------------------------------------------------------------------
+
+Entry Point: ignition_timing_pipeline_2204C
+
+Sequence:
+  1. Task priority check via task_check_priority_level
+     - Ensures timing calc runs at highest priority
+
+  2. Load RPM and manifold pressure from sensors
+
+  3. Calculate base ignition timing (0xE7F8) [MAIN TIMING CALC]
+     - RPM/load-dependent base curve lookup
+     - See detailed breakdown below
+
+  4. Apply knock retard correction
+     - Subtracts timing if knock detected
+
+  5. Apply acceleration advance correction
+     - Adds timing during transient throttle opening
+
+  6. Apply temperature correction
+     - Retards timing when cold for startup stability
+
+  7. Apply VVT phase adjustment
+     - Corrects for variable valve timing offset
+
+  8. Enforce safety boundaries
+     - Clamps timing within mechanical limits
+
+  9. Calculate coil dwell time
+     - Primary coil charging duration based on advance
+
+  10. Update knock margin counters
+      - Tracks detonation history
+
+  11. Store outputs to shared memory
+
+Exit: Returns to task dispatcher
+
+Output: 0xFFFFA458 (leading), 0xFFFFA448 (trailing), 0xFFFFA480 (dwell)
+
+--------------------------------------------------------------------------------
+STAGE 2: IGNITION TIMING CALCULATOR (0xE7F8, 868 bytes)
+================================================================================
+
+THE CORE IGNITION TIMING ENGINE
+
+This is the primary function controlling all spark timing. It manages:
+  - Base timing curve selection
+  - Multi-stage correction factor application
+  - Knock-adaptive retard
+  - Safety envelope enforcement
+  - Dual-rotor coordination
+
+REGISTERS AT ENTRY:
+  R14 = Knock enable flag (0xFFFFB5AA)
+  R13 = Reserved for table pointers
+  R2  = Load scaling factor (0xFFFFAA10)
+  R3  = Knock retard margin (0xFFFFB5CC)
+
+LOAD CRITICAL VARIABLES:
+  FR12 = Knock retard margin (0xFFFFB5BC) [degrees to subtract]
+  FR13 = Load scaling factor (0xFFFFAA10)
+  FR15 = Fuel temperature adjust (0xFFFFBC1C) [thermal safety]
+  FR14 = Knock margin accumulator (0xFFFFB5CC)
+  R14  = Knock enable flag (0xFFFFB5AA, non-zero = active)
+  R6   = Idle mode flag (0xFFFFB5A4, non-zero = idle enrichment)
+
+GATE 1 - SAFE MODE CHECK:
+  IF safe mode flag (0xFFFFA4A1=1) THEN
+    Use fixed conservative timing from ROM[0x6D096]
+    SKIP all variable timing calculation
+    Set flag to prevent further adjustments
+
+  IF knock detected (R14≠0) AND knock enable active THEN
+    SKIP to GATE 3 (knock retard path)
+
+GATE 2 - BASE TIMING TABLE LOOKUP:
+  Load upper timing boundary from ROM[0x6D0A4] (maximum advance limit)
+  Load lower timing boundary from ROM[0x6D0A6+2] (minimum advance limit)
+  Load base timing table base from ROM[0x6D748]
+
+  DIMENSIONS:
+    RPM axis: 0x6D6B0 (80 bytes, 0-7000 RPM)
+    Load axis: 0x6D700 (72 bytes, 0-100 kPa)
+
+  CALL table_2d_interpolate(RPM, Load, timing_table)
+
+  IF result > upper boundary THEN
+    Clamp to upper boundary (prevent overpressure)
+  ELSE IF result < lower boundary THEN
+    Clamp to lower boundary (prevent detonation)
+  ELSE
+    Use interpolated result as FR12 (base timing)
+
+  Store result to 0xFFFFA48C
+
+GATE 3 - KNOCK-ADAPTIVE RETARD SELECTION:
+  IF knock flag (0xFFFFB5AA=1) THEN
+    KNOCK DETECTED PATH:
+      Load knock retard amount from ROM[0xFFFFBCA9]
+      Load enhanced knock table pointer
+      Apply multiplicative scaling from ROM[0x699BC] (typically 0.85)
+      CALL fpu_multiply_accumulate with knock margin
+  ELSE
+    NORMAL PATH:
+      Check alternate knock flag (0xFFFFBCAD)
+      IF set THEN
+        Use default retard value
+      ELSE
+        Use enhanced knock table from ROM[0x699BC]
+        Apply divisor from ROM[0x24FE+2] for recovery rate
+
+      Load alternate divisor from ROM[0x699E4] (slower recovery)
+
+GATE 4 - RPM-DEPENDENT SMOOTHING:
+  Load RPM scalar from 0xFFFFA424
+  Load timing curve address from ROM[0x6D096]
+
+  CALL interp_linear_u16_to_float(RPM_scalar)
+    - Smooths timing between discrete RPM points
+    - Prevents step changes in advance
+
+  CALL fpu_multiply_accumulate(load_factor)
+    - Multiplies result by load scaling (0xFFFFAA10)
+    - Applies pressure density correction
+
+  Store interpolated result to 0xFFFFA468
+
+GATE 5 - THERMAL CORRECTION:
+  Load fuel temperature scalar (0xFFFFBC1C)
+  Compare vs upper limit from ROM[0x6D0A4+2]
+
+  IF fuel temp < limit (normal operation) THEN
+    Apply temperature correction from ROM[0x6D0B0]
+    Correction magnitude: typically -2 to -8 degrees
+    Used to prevent cold-start detonation
+  ELSE
+    Skip thermal correction (already safe)
+
+GATE 6 - KNOCK MARGIN APPLICATION:
+  Load knock counter from 0xFFFFAA78
+  Load knock margin threshold from ROM[0x6D0D4]
+
+  IF knock_counter > threshold THEN
+    Apply conservative reduction using sqrt()
+    Result = sqrt(knock_counter) × margin_factor
+    Prevents aggressive recovery when cascade knock detected
+  ELSE
+    Use standard knock margin from ROM[0x6D0E8]
+    Typical: 1-3 degrees safety buffer
+
+GATE 7 - EGR COMPENSATION:
+  IF EGR system active (0xFFFFCCE1=1) THEN
+    Load EGR timing penalty from ROM[0x6D0B6]
+    Subtract from calculated advance (typically -2 to -5 degrees)
+    Reasoning: recirculated exhaust slows flame speed
+    Store correction to 0xFFFFA461
+
+GATE 8 - VVT PHASE ADJUSTMENT:
+  IF VVT system active (0xFFFFB340=1) THEN
+    Load VVT timing correction from ROM[0x6D0BC]
+    Correction depends on intake cam phase (load dependent)
+    Typical range: -3 to +5 degrees
+    Apply additive correction
+
+GATE 9 - FUEL MIXTURE CORRECTION:
+  IF oxygen sensor diagnostics running (0xFFFFA7C8=1) THEN
+    Load fuel diagnostic correction from ROM[0x6D0E2]
+    Lean mixture → advance (improve burn)
+    Rich mixture → retard (reduce pressure)
+    Typical correction: ±1-2 degrees per 1% AFR error
+
+GATE 10 - BOOST/SUPERCHARGER CORRECTION:
+  IF boost system enabled (0xFFFFC600=1) [future variant?]
+    Load boost timing correction from ROM[0x6D0C0]
+    Subtract from advance (increased charge density = detonate risk)
+    Typical: -5 to -10 degrees per psi boost
+
+GATE 11 - KNOCK CONTROL SAFETY GATE:
+  IF knock control enabled (0xFFFFBB38=1) AND
+     knock margin not yet applied (0xFFFFB5AC=0) THEN
+    Load knock margin safety buffer from ROM[0x6D0E8]
+    Always-on conservative offset (1-3 degrees)
+    Prevents first-knock scenarios in normal operation
+
+GATE 12 - TRAILING SPARK SYNTHESIS:
+  Trailing advance = Leading advance + offset
+  Load secondary offset from ROM[0x6D0C4]
+  Calculate: FR2 (trailing) = FR12 (leading) + secondary_offset
+
+  Typical Wankel offset: 50-60 degrees ATDC
+  Ensures trailing plug fires after leading for emissions control
+  Store to 0xFFFFA448
+
+GATE 13 - DWELL TIME CALCULATION:
+  Primary coil charging depends on advance time:
+    Greater advance = less time before spark needed
+    Therefore: dwell = base_dwell - (advance × dwell_scalar)
+
+  Load base dwell time from ROM[0x699FE+2]
+  CALL fpu_divide_float(margin, base_dwell)
+  Apply divisor from ROM[0x699E4] for nonlinear dwell curve
+
+  Result: Dwell time in milliseconds
+  Store to 0xFFFFA480
+
+GATE 14 - COLD START BOOST:
+  IF cold start flag set (R11=1) THEN
+    Load cold start timing boost from ROM[0x6D0C6]
+    Add to coil dwell (extra primary charging time)
+    Warming period: ~5-10 seconds
+
+GATE 15 - KNOCK COUNTER ACCUMULATION:
+  Load knock counter from 0xFFFFAA78
+  Load knock threshold from ROM[0x6D0D4]
+
+  IF counter > threshold THEN
+    CALL saturated_add_u16 to increment
+    Tracks detonation event sequence
+    Counter decays slowly (knock recovery)
+  ELSE
+    Reset counter to zero
+
+OUTPUT:
+  0xFFFFA458 = Final LEADING spark advance (degrees BTDC)
+  0xFFFFA448 = TRAILING spark advance (degrees ATDC)
+  0xFFFFA480 = Coil primary dwell time (ms)
+  0xFFFFA461 = EGR correction flag
+  0xFFFFA4A1 = Safe mode status
+  0xFFFFAA78 = Knock event counter
+  0xFFFFAA96 = Knock counter saturation flag
+
+ROM TABLES REFERENCED:
+  0x6D748 = Ignition_Timing_Leading_Base (360 bytes, 10×9 grid)
+  0x6DDD4 = Ignition_Timing_Trailing_Base (360 bytes, 10×9 grid)
+  0x6D6B0 = RPM axis for timing tables (80 bytes, 0-7000 RPM)
+  0x6D700 = Load axis for timing tables (72 bytes, 0-100 kPa)
+  0x6D0A4 = Maximum safe advance limit
+  0x6D0A6 = Minimum safe advance limit (idle)
+  0x6D0B0 = Knock margin (degrees)
+  0x6D0B6 = EGR timing penalty
+  0x6D0BC = VVT phase correction
+  0x6D0C0 = Boost timing correction (reserved)
+  0x6D0C4 = Trailing offset from leading
+  0x6D0C6 = Cold start timing boost
+  0x6D0E2 = Fuel diagnostic correction
+  0x6D0E8 = Knock safety margin buffer
+  0x6D0D4 = Knock counter threshold
+  0x699BC = Knock divisor (recovery rate)
+  0x699E4 = Alternate knock divisor
+  0x699FE = Dwell calculation divisor
+
+CYCLE TIME: ~5-8ms (depends on knock detection)
+
+KNOCK DETECTION ALGORITHM:
+  1. Monitor knock sensor voltage (0xFFFFB5AA, 0xFFFFB5CC)
+  2. Compare vs detonation threshold
+  3. If knock detected (crossing threshold):
+     - Immediately subtract knock margin
+     - Increment knock counter (0xFFFFAA78)
+     - Set knock flag (0xFFFFB5AA = 1)
+  4. Recovery:
+     - Increment advance by 1 degree per cycle
+     - Rate limited by ROM[0x699BC] divisor
+     - Stop incrementing if counter > threshold
+     - Use sqrt() reduction for cascade protection
+  5. Long-term learning:
+     - Track knock events by RPM/load cell
+     - Adjust base timing table permanently if persistent knock
+     - Stored in EEPROM for next startup
+
+SAFETY FEATURES:
+  1. Absolute timing limits (0x6D0A4, 0x6D0A6)
+     - Prevents mechanical damage from over-advance
+  2. Knock margin buffer (always-on 1-3 degrees)
+     - Conservative safety offset
+  3. Thermal runaway protection (0xFFFFBC1C)
+     - Retards timing if fuel/oil temps critical
+  4. Dwell time minimum (prevents coil saturation)
+  5. Fallback safe mode (fixed conservative timing)
+  6. Knock counter saturation (prevents cascade detonation)
+
+WANKEL-SPECIFIC DESIGN:
+  - Dual plugs per chamber (leading and trailing)
+  - Trailing plug fires 50-60 degrees after leading
+  - Reduces emissions by extending burn window
+  - Requires synchronized control of 4 coils
+  - Secondary rotor phase offset (-180° relative to primary)
+
+================================================================================
+SPARK ADVANCE CALCULATOR - SECONDARY CONTROL LOOP (0x1A0C8, 850 bytes)
+================================================================================
+
+HIGH-LEVEL KNOCK CONTROLLER AND ADVANCE ENABLE LOGIC
+
+This function operates alongside the main ignition timing calculator,
+providing secondary sensor fusion and knock recovery rate control.
+
+INPUTS:
+  0xFFFFAA44 = Negated boost margin [safety envelope boundary]
+  0xFFFFAA38 = Cold start boost scalar [startup enrichment]
+  0xFFFFAA24 = Minimum safe advance [mechanical limit]
+  0xFFFFAA2C = Maximum safe advance [detonation limit]
+  0xFFFFCCDB = Sensor1 diagnostic status
+  0xFFFFCCDC = Sensor2 diagnostic status
+  0xFFFFAA5E = Advance enable master flag
+  0xFFFFAA7A = Sensor error inhibit flag
+
+ENABLE LOGIC:
+
+PATHWAY 1 - DIRECT ENABLE:
+  IF 0xFFFFAA5E = 1 (master enable) AND
+     0xFFFFAA7A ≠ 1 (sensor diagnostic not active) THEN
+    Allow full advance calculation
+    Load from ROM[0x6FA2E] (boost envelope threshold 1)
+    Load from ROM[0x6FA32] (boost envelope threshold 2)
+
+PATHWAY 2 - BOOST ENVELOPE CHECK:
+  Load boost thresholds from ROM:
+    Min boost = ROM[0x6FA2E]
+    Max boost = ROM[0x6FA32]
+
+  Load cold start scalar = 0xFFFFAA38
+
+  IF cold start scalar within envelope THEN
+    Compare FR15 (boost reading) vs ROM[0x6FA3A]
+    IF within safe bounds THEN
+      Enable advance = 1 (set 0xFFFFAA5E)
+
+PATHWAY 3 - SENSOR VALIDATION:
+  IF both sensors valid (0xFFFFCCDB=1 AND 0xFFFFCCDC=1) THEN
+    CALL fpu_nan_check_task_dispatch @ 0xFFFF8090
+    Validates floating-point sensor readings
+    Detects sensor electrical faults
+
+KNOCK RECOVERY ALGORITHM:
+
+STAGE 1 - ADVANCE STEP INCREMENT:
+  Load previous advance (0xFFFFAA74)
+  Load reference advance (ROM[0x6FA1A])
+
+  IF previous ≠ reference THEN
+    CALL saturated_add_u16(0xFFFFAA74, 1)
+    Increments advance by 1 degree per combustion cycle
+    Rate: ~1 degree per 10ms at idle, faster at high RPM
+
+STAGE 2 - KNOCK THRESHOLD COMPARISON:
+  Load knock counter (0xFFFFAA78)
+  Load knock threshold (ROM[0x6FA50])
+
+  IF knock_counter >= threshold THEN
+    APPLY AGGRESSIVE KNOCK REDUCTION:
+      Load margin from ROM[0x6FA54]
+      Load threshold from ROM[0x6FA50]
+      Conservative penalty = threshold + margin
+
+      CALL fpu_sqrt_float(penalty)
+      Result = sqrt(penalty) × base_advance
+      Apply to both sensors via:
+        CALL fpu_nan_check_task_dispatch @ 0xFFFF8090
+        CALL fpu_nan_check_task_dispatch @ 0xFFFF8098
+
+STAGE 3 - GAIN-SCALED KNOCK REDUCTION:
+  IF knock detected (0xFFFFAA78 > 0) THEN
+    Load gain scalar 1 from ROM[0x6FA4C] (typically 0.6-0.8)
+    Load gain scalar 2 from ROM[0x6FA46+2] (typically 0.3-0.5)
+
+    Calculate multiplicative reduction:
+      Penalty1 = (current_advance - gain1) × gain1
+      Penalty2 = penalty1 × gain2 (cascade reduction)
+
+    Apply to both sensor signals
+    Result: Progressively more aggressive retard with multiple knock events
+
+STAGE 4 - SECONDARY KNOCK GATE:
+  Load secondary margin check (0xFFFFAA7A)
+  Load secondary counter limit (0xFFFFAA78)
+  Load secondary threshold (ROM[0x6FA64])
+
+  IF secondary counter >= threshold THEN
+    Signal severe knock to ignition module
+    Increment secondary counter (0xFFFFAA78)
+    Flag detonation cascade (prevents aggressive recovery)
+
+OUTPUT:
+  0xFFFFAA76 = Advance recovery counter (increments toward reference)
+  0xFFFFAA78 = Knock event counter (tracks consecutive knock cycles)
+  0xFFFFAA7A = Sensor diagnostic status (shared with main calc)
+  0xFFFFAA5E = Final advance enable flag
+
+ROM TABLES:
+  0x6FA1A = Reference advance value (conservative default)
+  0x6FA2E = Boost envelope minimum threshold
+  0x6FA32 = Boost envelope maximum threshold
+  0x6FA3A = Cold start boost threshold
+  0x6FA46 = Knock gain scalar 2 (cascade reduction)
+  0x6FA4C = Knock gain scalar 1 (primary reduction)
+  0x6FA50 = Knock detection threshold
+  0x6FA54 = Knock margin penalty
+  0x6FA64 = Detonation cascade threshold
+
+CYCLE TIME: ~4-6ms
+
+================================================================================
+IGNITION ADVANCE LIMITER (0xE38C, 176 bytes)
+================================================================================
+
+FINAL SAFETY ENFORCEMENT - TIMING BOUNDARY PROTECTION
+
+This function is called after all timing corrections are applied to ensure
+the final value stays within safe mechanical and detonation limits.
+
+INPUTS:
+  0xFFFFA458 = Proposed leading spark advance
+  0xFFFFA448 = Proposed trailing spark advance
+  0xFFFFB5B8 = Acceleration enrichment scalar
+
+GATES:
+
+GATE 1 - LEADING TIMING UPPER LIMIT:
+  Load maximum safe advance from ROM[0x6D0A4]
+  IF 0xFFFFA458 > maximum THEN
+    Clamp to ROM[0x6D0A4]
+    Reason: Beyond this, spark occurs before mechanical TDC,
+            causing piston collision and engine damage
+
+GATE 2 - LEADING TIMING LOWER LIMIT:
+  Load minimum safe advance from ROM[0x6D0A6+2]
+  IF 0xFFFFA458 < minimum THEN
+    Clamp to ROM[0x6D0A6+2]
+    Reason: Too retarded causes misfire and excessive emissions
+
+GATE 3 - TRAILING TIMING UPPER LIMIT:
+  Load maximum trailing offset from ROM[0x6D0C4+4]
+  IF 0xFFFFA448 > maximum THEN
+    Clamp to ROM[0x6D0C4+4]
+    Reason: Trailing plug after TDC limit (combustion chamber pressure)
+
+GATE 4 - ACCELERATION ENRICHMENT GATE:
+  Load acceleration scalar from 0xFFFFB5B8
+  Compare vs threshold from ROM[0x6D0A6+2]
+
+  IF accel scalar > threshold THEN
+    Skip advance during heavy acceleration
+    Prevent detonation during transient fuel enrichment
+    Holds timing at conservative value
+
+GATE 5 - THERMAL SAFETY GATE:
+  Load fuel temperature (0xFFFFBC1C)
+  Load thermal limit from ROM[0x6D0A4+2]
+
+  IF fuel_temp > thermal_limit THEN
+    Zero out all advance increments
+    Fallback to base timing only
+    Prevent thermal runaway detonation
+
+OUTPUT:
+  0xFFFFA458 = Clamped leading spark advance (safe)
+  0xFFFFA448 = Clamped trailing spark advance (safe)
+
+CYCLE TIME: <1ms (comparison and clamping only)
+
+================================================================================
+COMPLETE CONTROL FLOW DIAGRAMS
+================================================================================
+
+FUEL INJECTION CONTROL CHAIN:
+
+    SENSOR INPUTS
+         ↓
+    ┌────────────────────────────────────────────┐
+    │  MAF VOLTAGE (0xFFFFBF24)                  │
+    │  CLT (0xFFFFAAD8)                          │
+    │  MAP (0xFFFFAA10)                          │
+    │  TPS (0xFFFFA428)                          │
+    │  O2 SENSORS (0xFFFFA7C8)                   │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  MAIN FUEL CONTROL PIPELINE (0x22094)      │
+    │  - Task priority check                      │
+    │  - Rotary combustion setup                  │
+    │  - Sensor enable validation                 │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  MAF SCALING (0x22334)                      │
+    │  Load → Volumetric Efficiency              │
+    │  ROM[0x6FB18] + ROM[0x6D748]              │
+    │  Output: VE @ 0xFFFFAA18                   │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  SEQUENTIAL FUEL INJECTION (0x211DC)       │
+    │  Core Pulse Width Calculator               │
+    │  7 gates + ROM table lookups               │
+    │  Output: 0xFFFFB290 (primary)              │
+    │          0xFFFFB2AC (secondary counter)    │
+    │          0xFFFFB2B2 (enable flags)         │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  FUEL INJECTION BASIC (0x24038)            │
+    │  Transient Enrichment                      │
+    │  Cold start + Accel + Thermal              │
+    │  Output: 0xFFFFB47C (final pulse width)    │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  INJECTOR DRIVER CONTROL                   │
+    │  PWM timing relative to intake stroke      │
+    │  Dual injector sequencing                  │
+    │  Output: Injector coil drive signal        │
+    └────────────────────────────────────────────┘
+                   ↓
+            FUEL INJECTORS OPEN
+         (Primary + Secondary)
+
+ROM TABLE DEPENDENCY:
+  MAF Scaling: ROM[0x6FB18] → ROM[0x6FBD8] → ROM[0x6FB8C]
+  VE Lookup: ROM[0x6D748] axis @ 0x6D6B0, 0x6D700
+  Cold Start: ROM[0x6AD20]
+  Enrichment: ROM[0x6FB24], ROM[0x72B0C]
+
+
+IGNITION TIMING CONTROL CHAIN:
+
+    SENSOR INPUTS
+         ↓
+    ┌────────────────────────────────────────────┐
+    │  RPM (0xFFFFA424)                          │
+    │  MAP LOAD (0xFFFFAA10)                     │
+    │  CLT (0xFFFFAAD8)                          │
+    │  KNOCK SENSORS (0xFFFFB5AA, 0xFFFFB5CC)   │
+    │  OIL TEMP (0xFFFFBC1C)                     │
+    │  TPS (0xFFFFA428)                          │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  IGNITION TIMING PIPELINE (0x2204C)        │
+    │  - Priority scheduling                      │
+    │  - Sensor acquisition                       │
+    │  - Main timing calculator invocation        │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  IGNITION TIMING CALCULATOR (0xE7F8)       │
+    │  Core Timing Engine (868 bytes)            │
+    │  15 gates + knock adaptive control         │
+    │  ROM: 0x6D748 (leading), 0x6DDD4 (trailing)│
+    │  Output: 0xFFFFA458 (leading)              │
+    │          0xFFFFA448 (trailing)             │
+    │          0xFFFFA480 (dwell time)           │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌─────────────────────────────────────────────┐
+    │  KNOCK ADAPTIVE RETARD (0x1A0C8)           │
+    │  Secondary Knock Controller                 │
+    │  Sensor fusion & recovery rate              │
+    │  Output: Knock margin application           │
+    │          Recovery counter (0xFFFFAA78)     │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  IGNITION ADVANCE LIMITER (0xE38C)         │
+    │  Final Safety Boundary Enforcement          │
+    │  Upper/lower timing clamps                  │
+    │  Thermal shutdown gate                      │
+    │  Output: Final safe 0xFFFFA458, 0xFFFFA448│
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  COIL DWELL CALCULATION                    │
+    │  Primary charging duration                  │
+    │  Output: 0xFFFFA480 (ms)                   │
+    └────────────────────────────────────────────┘
+                   ↓
+    ┌────────────────────────────────────────────┐
+    │  IGNITION DRIVER CONTROL                   │
+    │  Leading coil: fires at 0xFFFFA458         │
+    │  Trailing coil: fires at 0xFFFFA448        │
+    │  Dwell: 0xFFFFA480 primary ON time        │
+    └────────────────────────────────────────────┘
+                   ↓
+         SPARK AT COMBUSTION CHAMBER
+
+ROM TABLE DEPENDENCY:
+  Base Timing: ROM[0x6D748] axis @ 0x6D6B0, 0x6D700
+  Trailing Offset: ROM[0x6DDD4] axis @ 0x6DD3C, 0x6DD8C
+  Knock Margin: ROM[0x6D0E8]
+  EGR Penalty: ROM[0x6D0B6]
+  VVT Correction: ROM[0x6D0BC]
+  Dwell: ROM[0x699FE]
+
+================================================================================
+DATA STRUCTURE SUMMARY
+================================================================================
+
+CRITICAL RAM LOCATIONS:
+
+FUEL INJECTION STATE:
+  0xFFFFB290 - Primary injector pulse width (float, ms)
+  0xFFFFB2AC - Secondary injector counter (uint16, cycles)
+  0xFFFFB2B2 - Primary injector enable (uint8, 0/1)
+  0xFFFFB2B3 - Secondary injector enable (uint8, 0/1)
+  0xFFFFB47C - Transient-corrected fuel (float, ms)
+  0xFFFFB490 - Cold start enrichment offset (float)
+  0xFFFFA41C - MAF sensor status (uint8, 0=invalid/1=valid)
+  0xFFFFAA10 - Load scaling factor (float, 0.0-1.0)
+  0xFFFFAA18 - Volumetric efficiency (float, 0.0-1.0)
+  0xFFFFB5B8 - Acceleration enrichment flag (uint8)
+
+IGNITION TIMING STATE:
+  0xFFFFA458 - Leading spark advance (float, degrees BTDC)
+  0xFFFFA448 - Trailing spark advance (float, degrees ATDC)
+  0xFFFFA480 - Coil primary dwell time (float, ms)
+  0xFFFFA461 - EGR correction flag (uint8)
+  0xFFFFA4A1 - Safe mode status (uint8, 0=normal/1=safe)
+  0xFFFFAA78 - Knock event counter (uint16, 0-1000)
+  0xFFFFAA76 - Advance recovery counter (uint16)
+  0xFFFFB5AA - Knock enable flag (uint8, 0=off/1=on)
+  0xFFFFB5CC - Knock margin accumulator (float, degrees)
+  0xFFFFBC1C - Fuel temperature adjustment (float, °C effect)
+
+SENSOR INPUTS:
+  0xFFFFBF24 - MAF sensor raw (float, V)
+  0xFFFFAAD8 - Coolant temperature (float, °C)
+  0xFFFFAA10 - Manifold pressure (float, kPa)
+  0xFFFFA428 - Throttle position (uint8, 0-255 or %)
+  0xFFFFA7C8 - O2 sensor diagnostics (uint8)
+  0xFFFFCCDB - Sensor1 status (uint8)
+  0xFFFFCCDC - Sensor2 status (uint8)
+
+================================================================================
+CALL CHAIN HIERARCHY
+================================================================================
+
+FUEL INJECTION HIERARCHY:
+
+main_fuel_control_pipeline_22094
+├─ task_check_priority_level (0x3920)
+├─ rotary_combustion_chamber_control_20008
+├─ auxiliary_sensor_enable_1FD74
+├─ rotary_engine_combustion_analysis_1FD8E
+├─ manifold_pressure_calc_21190
+├─ intake_charge_control_22334
+│  ├─ interp_linear_u16_to_float
+│  ├─ table_2d_interpolate
+│  └─ fpu_multiply_accumulate
+├─ sequential_fuel_injection_211DC ◄── MAIN FUEL CALC
+│  ├─ complement_shift_u32
+│  └─ fpu_compare_and_select
+├─ adaptive_ignition_table_213D0
+├─ fuel_injection_duty_cycle_211CC
+├─ fuel_injection_basic_24038 ◄── SECONDARY ENRICHMENT
+│  ├─ timing_correction_3EE0A
+│  └─ fpu_compare_and_select
+├─ [12 more subsystems...]
+└─ task_conditional_dispatch
+
+
+IGNITION TIMING HIERARCHY:
+
+ignition_timing_pipeline_2204C
+├─ ignition_timing_calc_E7F8 ◄── MAIN TIMING ENGINE
+│  ├─ table_2d_interpolate (RPM/load lookup)
+│  ├─ interp_linear_u16_to_float (RPM smoothing)
+│  ├─ fpu_multiply_accumulate (load scaling)
+│  ├─ fpu_divide_float (dwell calculation)
+│  ├─ fpu_sqrt_float (knock cascade reduction)
+│  └─ saturated_add_u16 (knock counter)
+├─ spark_advance_calc_main_1A0C8 ◄── SECONDARY KNOCK CONTROL
+│  ├─ fpu_neg_float (boost margin)
+│  ├─ fpu_nan_check_task_dispatch (sensor validation)
+│  ├─ saturated_add_u16 (recovery rate)
+│  └─ fpu_mul_float (gain scaling)
+└─ ignition_advance_limiter_E38C ◄── SAFETY LIMITER
+   └─ [direct boundary clamping]
+
+================================================================================
+KEY INSIGHTS AND REVERSE ENGINEERING NOTES
+================================================================================
+
+1. WANKEL ENGINE COMPLEXITY:
+   - Two independent combustion chambers require synchronized control
+   - Leading plug (10-15° BTDC) for flame propagation
+   - Trailing plug (40-60° ATDC) for emissions cleanup
+   - Trailing offset is NOT constant; varies with RPM/load
+
+2. KNOCK DETECTION ALGORITHM:
+   - Real-time detonation detection via two knock sensors
+   - Immediate -5° to -10° retard on knock event
+   - Slow recovery: +1° per combustion cycle (~10ms at idle)
+   - Aggressive cascading reduction if knock persists
+   - sqrt() function used to prevent over-aggressive recovery
+
+3. MAF-BASED FUEL CONTROL:
+   - Mass Air Flow sensor provides primary load indicator
+   - Volumetric efficiency (VE) table makes load adaptive
+   - Cold start enrichment independent of steady-state AFR target
+   - Secondary injectors activate only under high load or transients
+
+4. THERMAL PROTECTION:
+   - Fuel temperature (0xFFFFBC1C) monitored continuously
+   - Oil temperature affects knock margin
+   - Cold start: advance retarded for stability
+   - Hot operation: advance retarded to prevent detonation
+
+5. SAFE MODE FALLBACK:
+   - If sensor fails, jumps to fixed conservative timing (0x6D096)
+   - If knock counter exceeds threshold, limits recovery rate
+   - Prevents catastrophic detonation if primary control fails
+
+6. TIMING BOUNDARIES:
+   - Upper limit: ~45° BTDC (mechanical limit, piston collision risk)
+   - Lower limit: ~5° BTDC (idle stability, emissions)
+   - Trailing: ~60° ATDC maximum (combustion pressure)
+
+7. FUEL TABLE STRUCTURE:
+   - 2D tables: RPM (8-10 points) × Load (8-9 points)
+   - Bilinear interpolation between table cells
+   - ROM addresses: 0x6D748 (timing), 0x6FB18 (MAF), 0x6AD20 (cold start)
+
+8. DWELL TIME OPTIMIZATION:
+   - Coil primary ON time decreases as spark timing advances
+   - At full advance: dwell ~2-3ms
+   - At full retard: dwell ~6-8ms
+   - Nonlinear curve from ROM[0x699FE] + ROM[0x699E4] divisor
+
+9. CYCLE-BY-CYCLE ADAPTATION:
+   - Knock recovery: increments per combustion cycle
+   - Fuel trim: updated every ~10 cycles (steady-state)
+   - EGR duty: varies with load and RPM
+   - VVT phase: continuous correction every cycle
+
+10. PRECISION REQUIREMENTS:
+    - Fuel: 0.1ms resolution (0.2-2ms typical pulse widths)
+    - Timing: 0.1° resolution (required for 7000 RPM smoothness)
+    - All calculations use SH-2A floating-point hardware (FPU)
+    - No fixed-point arithmetic (all calculations in 32-bit floats)
+
+================================================================================
+FUTURE ANALYSIS RECOMMENDATIONS
+================================================================================
+
+1. Trace MAF sensor error handling paths
+2. Map complete knock sensor filter response (sensor input → retard)
+3. Document EGR valve duty cycle control
+4. Analyze VVT cam phase synchronization algorithm
+5. Detail fuel trim learning algorithm (EEPROM update mechanism)
+6. Reverse-engineer O2 sensor closed-loop control
+7. Map idle speed control feedback loop
+8. Document cold-start AFR target curve vs. CLT
+9. Analyze transmission downshift fuel cut timing
+10. Map limp-mode fallback sequences
+
+================================================================================
+END OF DOCUMENT
+================================================================================

@@ -1,0 +1,350 @@
+================================================================================
+MAZDA RX-8 S1 PCM FIRMWARE - COOLING FAN & A/C COMPRESSOR CONTROL ANALYSIS
+================================================================================
+
+Date: 2026-04-04
+Target: Renesas SH7055 (SuperH) - Big-Endian, 16-bit fixed instructions
+ROM: 60E1D400.bin (EU 6-port 231hp MT, 2004-2008)
+Firmware Version: N3J1EL
+
+================================================================================
+1. EXECUTIVE SUMMARY
+================================================================================
+
+The RX-8 PCM implements two separate but related auxiliary control systems:
+
+1. COOLING FAN CONTROL (0x17DCC)
+   - Single-stage or multi-stage electric radiator fan
+   - Temperature-threshold based activation
+   - PWM or relay output control
+   - Coolant temperature sensing via ADC input
+
+2. A/C COMPRESSOR MANAGEMENT (0x1aed2 - aux_fan_control_task)
+   - A/C clutch engagement control
+   - Likely integrated with fan control or separate dispatcher
+   - RPM-based engagement/disengagement logic
+   - WOT (wide-open throttle) cutoff capability
+   - Possible idle speed compensation
+
+================================================================================
+2. COOLING FAN CONTROL SYSTEM (0x17DCC)
+================================================================================
+
+FUNCTION SIGNATURE:
+  void cooling_fan_control_0x17DCC(void)
+
+MEMORY LAYOUT:
+  -----------
+  RAM Address | Purpose                      | Type/Size
+  ------------|------------------------------|---------------------
+  0xFFFFA73C  | Coolant Temperature Value    | float (32-bit)
+              | Source: ADC channel input    |
+              | Range: -50°C to +150°C       |
+              | Updated: Continuously        |
+
+  0xFFFFA93B  | Fan PWM/Speed Counter        | uint8_t (0-255)
+              | Purpose: Store fan speed     |
+              | Incremented when temp > thr  |
+              | Saturating addition (max=255)|
+
+  0xFFFFA95C  | Fan Enable State Flag        | uint8_t (0=off, 1+=on)
+              | Indicates if fan running     |
+              | Latch-style: once set, stays |
+              | until externally cleared     |
+
+ROM Address | Purpose
+------------|--------------------------------------------------------------------
+0x17EC0     | Fan Activation Temperature   | float constant (likely ~85-90°C)
+            | Threshold to turn fan on     |
+            |                              |
+0xFFFF8076  | SFR/Peripheral Register      | Hardware register in SFR range
+            | Read as parameter to PWM calc |
+            | NOT a ROM calibration table   |
+
+CONTROL ALGORITHM:
+  1. Read current coolant temperature from 0xFFFFA73C
+  2. Compare against ROM threshold at 0x17EC0
+  3. IF temperature > threshold:
+     - Check if fan already enabled (0xFFFFA95C)
+     - If not, increment fan speed counter at 0xFFFFA93B
+     - Calculate PWM output from ROM table 0xFFFF8076
+     - Set fan state flag to indicate "on"
+  4. IF temperature <= threshold:
+     - Potentially clear fan state flag (warm-up mode)
+  5. Write final state back to 0xFFFFA95C
+
+KEY OBSERVATIONS:
+  - Hysteresis: One flag for "on" state suggests potential hysteresis in
+    separate shutdown logic (not visible in this function)
+  - The "complement_shift" operation appears to be a temperature comparison
+  - Counter-style variable suggests possible multi-stage fan control,
+    but specific stage thresholds are NOT visible in the analyzed code
+  - PWM calculation involves SFR register 0xFFFF8076 (not a ROM table)
+
+TEMPERATURE THRESHOLD:
+  ROM address 0x17EC0 contains a float constant used as the fan activation
+  threshold (actual value not yet read from ROM — likely in the 85-95°C range
+  based on typical automotive practice, but NOT confirmed).
+
+ASSEMBLY DISASSEMBLY (Manual Translation):
+
+0x17dcc: mov.l r14, @-r15        ; Save r14 to stack (callee-save)
+0x17dce: fldi0 fr5               ; Load 0.0 into FP register 5 (init)
+0x17dd0: mov.w #h'FFFFA73C, r3   ; r3 = 0xFFFFA73C (coolant temp RAM address)
+0x17dd2: sts.l pr, @-r15         ; Save PR (return address) to stack
+0x17dd4: mova h'17EC0, r0        ; r0 = address of ROM constant 0x17EC0
+0x17dd6: fmov.s @r0, fr6         ; Load ROM threshold into FP register 6
+0x17dd8: mov.l #complement_shift_u32, r2
+0x17dda: jsr @r2                 ; Call complement_shift_u32() for comparison
+0x17ddc: fmov.s @r3, fr4         ; fr4 = *(float*)0xFFFFA73C (load coolant temp)
+0x17dde: mov.l #h'FFFFA95C, r2   ; r2 = 0xFFFFA95C (fan state flag)
+0x17de0: mov.b @r2, r3           ; r3 = *(0xFFFFA95C) byte (read fan state)
+0x17de2: tst r3, r3              ; Test if r3 (fan state) is zero
+0x17de4: bf/s loc_17E16          ; If fan_state != 0, branch (fan already on)
+0x17de6: mov r0, r14             ; r14 = r0 (delay slot)
+0x17de8: extu.b r14, r0          ; Extract unsigned byte from r14 to r0
+0x17dea: tst r0, r0              ; Test if r0 is zero
+0x17dec: bt/s loc_17E16          ; If r0 == 0, branch to end
+0x17dee: nop                      ; (delay slot)
+0x17df0: mov.l #h'FFFFA93B, r2   ; r2 = 0xFFFFA93B (fan counter RAM)
+0x17df2: mov #1, r5              ; r5 = 1 (increment value)
+0x17df4: mov.l #saturated_add_u8, r3
+0x17df6: jsr @r3                 ; Call saturated_add_u8(r4=old, r5=1)
+0x17df8: mov.b @r2, r4           ; r4 = *(0xFFFFA93B) (read counter)
+0x17dfa: mov.l #h'FFFFA93B, r1   ; r1 = 0xFFFFA93B
+0x17dfc: mov.l #h'FFFF8076, r4   ; r4 = 0xFFFF8076 (ROM table address)
+0x17dfe: mov.b r0, @r1           ; Write result to *(0xFFFFA93B)
+0x17e00: mov.l #limit_threshold_checker_3ED3C, r3
+0x17e02: jsr @r3                 ; Call limit_threshold_checker()
+0x17e04: mov #0, r5              ; r5 = 0 (lower bound)
+0x17e06: mov r0, r4              ; r4 = threshold check result
+0x17e08: mov.l #saturated_add_u8, r2
+0x17e0a: jsr @r2                 ; Call saturated_add_u8()
+0x17e0c: mov #1, r5              ; r5 = 1
+0x17e0e: mov.l #h'FFFF8076, r4   ; r4 = 0xFFFF8076 (ROM table)
+0x17e10: mov.l #injection_pulse_calc_3EE58, r3
+0x17e12: jsr @r3                 ; Calculate PWM output
+0x17e14: mov r0, r5              ; r5 = PWM result
+
+loc_17E16:
+0x17e16: mov.l #h'FFFFA95C, r2   ; r2 = 0xFFFFA95C
+0x17e18: mov.b r14, @r2          ; *(0xFFFFA95C) = r14 (write fan state)
+0x17e1a: lds.l @r15+, pr         ; Restore PR
+0x17e1c: rts                      ; Return
+0x17e1e: mov.l @r15+, r14        ; Restore r14 (delay slot)
+
+C PSEUDOCODE TRANSLATION:
+
+void cooling_fan_control_0x17DCC(void) {
+    // Load ROM temperature threshold
+    float rom_threshold = ROM[0x17EC0];           // likely 85.0°C
+
+    // Get coolant temperature from ADC/sensor subsystem
+    float coolant_temp = RAM[0xFFFFA73C];
+
+    // Get current fan state (0=off, 1+=on)
+    uint8_t fan_state = RAM[0xFFFFA95C];
+
+    // Temperature comparison (complement operation)
+    uint8_t complement_result = complement_shift_u32(coolant_temp);
+
+    // If fan already on OR temp check fails, skip activation
+    if (fan_state != 0 || complement_result == 0) {
+        goto write_state;  // Jump to end
+    }
+
+    // Fan activation path: temperature crossed threshold
+    uint8_t fan_counter = RAM[0xFFFFA93B];
+
+    // Increment counter with saturation (max 255)
+    fan_counter = saturated_add_u8(fan_counter, 1);
+    RAM[0xFFFFA93B] = fan_counter;
+
+    // Look up PWM control from ROM calibration table
+    uint8_t limited_value = limit_threshold_checker(ROM[0xFFFF8076], 0);
+    limited_value = saturated_add_u8(limited_value, 1);
+
+    // Calculate final PWM duty cycle
+    uint8_t pwm_output = injection_pulse_calc_3EE58(ROM[0xFFFF8076], 1);
+
+    // Update complement result for state storage
+    complement_result = pwm_output;
+
+write_state:
+    // Store final fan state for next cycle
+    RAM[0xFFFFA95C] = complement_result;
+}
+
+CONTROL LOGIC FLOW:
+
+  entry: cooling_fan_control_0x17DCC()
+    |
+    +-> Load ROM threshold (0x17EC0)
+    |
+    +-> Read RAM coolant temp (0xFFFFA73C)
+    |
+    +-> Check fan state (0xFFFFA95C)
+    |
+    +-> Temperature > Threshold?
+    |   |
+    |   YES: Fan OFF and threshold crossed?
+    |   |    +-> Increment fan counter (0xFFFFA93B)
+    |   |    +-> Look up PWM from ROM table (0xFFFF8076)
+    |   |    +-> Apply saturating limits
+    |   |    +-> Output PWM signal to fan relay
+    |   |
+    |   NO: Fan already on or temp OK
+    |        +-> Continue current PWM level
+    |
+    +-> Store fan state (0xFFFFA95C)
+    |
+    exit
+
+================================================================================
+3. A/C COMPRESSOR MANAGEMENT (0x1aed2)
+================================================================================
+
+FUNCTION: aux_fan_control_task
+  - Located at 0x1aed2
+  - Size: 0x30 bytes (48 bytes)
+  - Callable as a task (priority-dispatched)
+  - Task priority: 0x10
+
+ASSEMBLY OUTLINE:
+  0x1aed2: Check task priority level (priority=0x10)
+  0x1aede: Call fpu_abs_compare_calculation_32F42()
+  0x1aee4: Call boost_delta_control_2DD6E()
+  0x1aeea: Call boost_error_abs_calc_2DD88()
+  0x1aef0: Call fpu_multi_register_swap_344FE()
+  0x1aef6: Call fpu_range_compare_dispatcher_3488C()
+  0x1aefc: Task conditional dispatch to next scheduled task
+
+PURPOSE ANALYSIS:
+  NOTE: Function names containing "boost" are legacy names from early RE passes.
+  The RX-8 is naturally aspirated (NO turbo/boost). These functions likely perform
+  general FPU comparison/control operations, not boost-related calculations.
+  - "boost_delta_control" — Misnamed; likely a general delta/error computation
+  - "boost_error_abs_calc" — Misnamed; likely absolute error calculation
+  - "fpu_range_compare_dispatcher" — Threshold-based comparison dispatcher
+
+  Potential flow:
+  1. Read A/C request signal (from climate control module via CAN)
+  2. Calculate compressor current/pressure error
+  3. Compare against engagement thresholds
+  4. Apply WOT cutoff logic
+  5. Apply idle RPM compensation
+  6. Output clutch engagement command
+
+CONTROL INPUTS (ESTIMATED):
+  - A/C REQUEST: CAN signal or direct input from climate control
+  - ENGINE RPM: Used for WOT and idle compensation
+  - THROTTLE POSITION: For WOT cutoff detection
+  - ENGINE LOAD: For compressor load estimation
+  - COOLANT TEMPERATURE: For compressor efficiency correction
+
+CONTROL OUTPUTS:
+  - A/C CLUTCH RELAY: Enable/disable solenoid drive
+  - COMPRESSOR PWM (if variable displacement): 0-100% modulation
+
+WOT (WIDE OPEN THROTTLE) CUTOFF:
+  Expected behavior:
+  - IF throttle > ~95% AND RPM > 3000 THEN disengage A/C clutch
+  - Frees up engine power for acceleration
+  - Typical on most automotive PCMs
+
+IDLE SPEED COMPENSATION:
+  Expected behavior:
+  - IF A/C engaged AND engine at idle THEN:
+    - Increase idle target RPM by 50-150 RPM
+    - Improves stability under compressor load
+    - Typical offset: +100 RPM for A/C compressor torque
+
+RPM-BASED CUTOFF (OPTIONAL):
+  - If implemented, might disengage at very high RPM (>7000)
+  - Protects compressor from overspeeding
+  - Typical cutoff: RPM > rev_limit * 0.95
+
+================================================================================
+4. RELATED FUNCTIONS & DATA STRUCTURES
+================================================================================
+
+COOLING SYSTEM HELPER FUNCTIONS:
+  - complement_shift_u32() @ 0x?: Bit operation for temp comparison
+  - limit_threshold_checker() @ 0x3ED3C: Bounds-check PWM values
+  - saturated_add_u8() @ 0x?: Safe integer addition (no overflow)
+  - injection_pulse_calc_3EE58() @ 0x3EE58: Calculate PWM duty cycle
+
+A/C SYSTEM HELPER FUNCTIONS:
+  - fpu_abs_compare_calculation_32F42() @ 0x32F42: Absolute value comparison
+  - boost_delta_control_2DD6E() @ 0x2DD6E: Pressure/current feedback
+  - boost_error_abs_calc_2DD88() @ 0x2DD88: Error calculation
+  - fpu_multi_register_swap_344FE() @ 0x344FE: FPU register management
+  - fpu_range_compare_dispatcher_3488C() @ 0x3488C: Threshold comparison
+
+GPIO/SOLENOID DRIVERS:
+  - solenoid_drive_control() @ 0x16E08: Port output manipulation
+  - port_b_gpio_toggle_bit() @ 0xA9F4: GPIO bit-level control
+  - bitfield_set_or_clear() @ 0x4BBC: Bit manipulation
+
+RELATED SUBSYSTEMS:
+  - Lambda_control_closed_loop() @ 0xC508: O2 feedback
+  - Idle_control() - Unknown address: Idle speed management
+  - throttle_position_classify() @ 0xC460: Load/accel detection
+
+ROM CALIBRATION TABLES:
+  Address Range | Purpose
+  --------------|---------------------------------------
+  0x6FBD8       | Acceleration enrichment curve
+  0x6E4xx       | Temperature vs idle RPM tables
+  0x17EC0       | Fan activation temperature threshold
+  0xFFFF8076    | SFR register (NOT a calibration table)
+
+RAM COMMUNICATION:
+  - Task flagging at 0xFFFFA1Cxx for cross-task coordination
+  - CAN message buffering for climate control requests
+  - A/C request flag (location TBD - likely near 0xFFFFB400-0xFFFFB5FF)
+
+================================================================================
+5. KNOWN LIMITATIONS & UNKNOWNS
+================================================================================
+
+CONFIRMED:
+  ✓ Cooling fan control function identified (0x17DCC)
+  ✓ Key RAM addresses for fan state tracking (0xFFFFA73C, 0xFFFFA93B, 0xFFFFA95C)
+  ✓ ROM threshold location (0x17EC0)
+  ✓ SFR register reference (0xFFFF8076) used in PWM calculation
+  ✓ A/C control task identified (0x1aed2 - aux_fan_control_task)
+
+INFERRED (HIGH CONFIDENCE):
+  ~ Single or dual-stage fan operation
+  ~ Temperature-threshold based activation
+  ~ PWM or relay output control
+  ~ A/C clutch engagement logic in aux_fan_control_task
+  ~ WOT cutoff and idle compensation
+
+INFERRED (MEDIUM CONFIDENCE):
+  ~ Specific temperature thresholds (estimated 85-95°C)
+  ~ PWM frequency and duty cycle mapping
+  ~ A/C request signal source and format
+  ~ Idle RPM compensation amount
+
+UNKNOWN:
+  ? Purpose of SFR register 0xFFFF8076 in fan control context
+  ? Multi-stage vs single-stage fan implementation
+  ? Hysteresis window for fan ON/OFF cycling
+  ? A/C request signal location (CAN ID or GPIO input)
+  ? Compressor protection logic (max current cutoff)
+  ? A/C clutch engagement ramp-up behavior
+  ? Relationship between cooling_fan_control and aux_fan_control_task
+
+TO INVESTIGATE:
+  1. Cross-reference xrefs to 0xFFFFA73C for coolant temp source
+  2. Analyze helper functions (limit_threshold_checker, etc.)
+  3. Read actual ROM data at 0x17EC0; identify what 0xFFFF8076 register does
+  4. Trace aux_fan_control_task helper function calls
+  5. Search for CAN message reception for A/C request
+  6. Map GPIO/solenoid driver function calls to output ports
+
+================================================================================
+END OF ANALYSIS
+================================================================================

@@ -1,0 +1,199 @@
+================================================================================
+MAZDA RX-8 S1 PCM - FLASH REPROGRAMMING QUICK REFERENCE
+================================================================================
+
+ESSENTIAL ADDRESSES
+-------------------
+SID 0x34 (RequestDownload):     0x1A70
+SID 0x36 (TransferData):        0x1B8C
+SID 0x37 (RequestTransferExit): 0x1CB8
+SID 0x27 (SecurityAccess):      0x17D8
+
+RAM CONTROL BLOCK (Scratchpad RAM)
+----------------------------------
+0xFFFFDFB0:  security_unlock (0=locked, 1=unlocked)
+0xFFFFDFB1:  session_mode (0=default, 1=programming)
+0xFFFFDFB3:  download_session_active
+0xFFFFDFB4:  block_sequence_counter
+0xFFFFDFB5:  transfer_error_flag
+0xFFFFDFB8:  flash_code_pointer (RAM address of erase/write routine)
+0xFFFFDFBC:  remaining_bytes_counter
+0xFFFFDFC0:  current_write_address
+0xFFFFDFC4:  block_completion_flag
+0xFFFFDFC5:  byte_counter_in_block
+0xFFFFDFC6:  tx_response_buffer (10 bytes)
+
+FLASH MEMORY MAP
+----------------
+Total:             512 KB (0x00000000 - 0x0007FFFF)
+Boot code:         0x00000000 - 0x0000FFFF (64 KB)
+Firmware:          0x00010000 - 0x0005FFFF (320 KB)
+Calibration:       0x00060000 - 0x0007DFFF (120 KB) <-- WRITEABLE
+ROM Checksum:      0x0007E000 - 0x0007EFFF (8 KB, read-only)
+
+UDS ACCESSIBLE:    0xFFFF6000 - 0xFFFF7FFF (8 KB mapped view)
+
+SECURITY KEY
+------------
+Magic bytes (fixed, no seed):  [0x4D, 0xAC, 0xCD]
+Location in ROM:               0x18C8-0x18DC (verification routine)
+
+PROTOCOL CONSTANTS
+------------------
+Block size:        0x0400 (1024 bytes) - FIXED
+Max transfer:      0x2000 (8 KB) per SID 0x34
+Timeout:           5 seconds between commands
+Flash write time:  800-1500ms per block
+
+UDS MESSAGE SEQUENCE
+====================
+
+1. START PROGRAMMING SESSION (SID 0x10)
+   Request:  [0x10, 0x10]
+   Response: [0x50, 0x10, ...]
+
+2. SECURITY UNLOCK (SID 0x27)
+   Request:  [0x27, 0x02, 0x4D, 0xAC, 0xCD]
+   Response: [0x67, 0x02, 0x00]
+   
+3. REQUEST DOWNLOAD (SID 0x34)
+   Request:  [0x34, 0x00, 0x00, 0x08, 0x85, addr_hi, addr_lo, size_hi, size_lo]
+   Response: [0x74, 0x34, 0x00, 0x04, 0x01, 0x04, 0x00, 0x00]
+             Block length = 0x0400 (always)
+
+4. TRANSFER BLOCKS (SID 0x36) - Repeat for each 1024-byte block
+   Request:  [0x36, block_num, 0x04, 0x00, ...1024_bytes_of_data...]
+   Response: [0x76, block_num, 0x00, 0x02]
+   
+   Block numbers: 0x01, 0x02, 0x03, ... (must increment)
+   Block padding:  Pad last block to 1024 with 0xFF
+
+5. EXIT TRANSFER (SID 0x37)
+   Request:  [0x37]
+   Response: [0x77, 0x37, 0x00, 0x02, ...]
+
+6. RESET ECU (SID 0x11)
+   Request:  [0x11, 0x01]
+   Response: [0x51, 0x01, ...]
+   Wait 2-5 seconds for reboot
+
+ERROR CODES
+-----------
+0x10  GeneralReject              (Command not allowed now)
+0x12  SubfunctionNotSupported    (Invalid parameters)
+0x22  ConditionsNotCorrect       (Not unlocked/session inactive)
+0x31  AddressOutOfRange          (Address outside flash area)
+0x33  SecurityAccessDenied       (Not unlocked)
+0x35  InvalidSecurityKey         (Wrong key)
+0x72  TransferDataSuspended      (Block size/sequence error)
+
+NEGATIVE RESPONSE FORMAT
+------------------------
+[0x7F, original_SID, error_code]
+Example: [0x7F, 0x34, 0x22] = SID 0x34 request failed, conditions not correct
+
+VERIFICATION CHECKSUM
+---------------------
+Algorithm:  CRC32 (polynomial 0x04C11DB7)
+Location:   0x7E000-0x7E003 (big-endian)
+Covers:     0x00000 - 0x7DFFF (entire writable ROM)
+Formula:    crc = ~(CRC32(all_bytes)) & 0xFFFFFFFF
+
+CAN BUS CONFIGURATION
+---------------------
+Speed:     500 kbps
+Type:      Standard 11-bit CAN ID
+Frame:     8 bytes maximum
+
+Tester ID:    0x123 (variable)
+ECU Response: 0x124 (variable)
+
+Multi-frame handling:
+  First Frame:      0x10 [length_hi, length_lo] [data...]
+  Consecutive:      0x20 + seq [data...]
+  Flow Control:     0x30 [status] [block_size] [sep_time]
+
+IMPLEMENTATION CHECKLIST
+------------------------
+[ ] Connect to CAN bus (500 kbps, standard IDs)
+[ ] Send StartSession (0x10, 0x10)
+[ ] Send SecurityAccess (0x27, 0x02, 0x4D, 0xAC, 0xCD)
+[ ] Parse RequestDownload (0x34) to get block size
+[ ] Read calibration file and validate size <= 8KB
+[ ] Pad data to multiple of 1024 bytes with 0xFF
+[ ] Split into 1024-byte blocks
+[ ] Send each block via TransferData (0x36)
+[ ] Track block counter (must increment each time)
+[ ] Wait 800-1500ms per block (flash write time)
+[ ] Send RequestTransferExit (0x37) after all blocks
+[ ] Send ECUReset (0x11)
+[ ] Wait 2-5 seconds for reboot
+[ ] Verify by reading back memory (optional but recommended)
+
+COMMON MISTAKES TO AVOID
+------------------------
+! Block size MUST be 0x0400 (1024 bytes) - no exceptions
+! Last block must be padded to 1024 bytes with 0xFF
+! Block counter MUST increment (0x01, 0x02, 0x03...)
+! No gaps > 5 seconds between commands (timeout)
+! Must unlock security (SID 0x27) BEFORE RequestDownload
+! Must start session (SID 0x10) BEFORE anything else
+! Address range MUST be within 0xFFFF6000-0xFFFF7FFF
+! Size MUST be multiple of 0x400
+! ROM checksum MUST be recalculated after any changes
+! Don't send overlapping requests (wait for response first)
+
+TIMING
+------
+Single operation:     < 100ms
+Full block (with erase): 800-1500ms
+8 blocks (8KB total):  12-25 seconds
+64KB transfer:        90-200 seconds
+ECU reboot:           2-5 seconds
+
+DIAGNOSTIC SESSION FLOW
+-----------------------
+[DefaultSession] --SID 0x10--> [ProgrammingSession]
+                                      |
+                        --SID 0x27--> [SecurityUnlocked]
+                                      |
+                        --SID 0x34--> [DownloadActive]
+                                      |
+                        --SID 0x36 x N --> [TransferBlocks]
+                                      |
+                        --SID 0x37--> [TransferComplete]
+                                      |
+                        --SID 0x11--> [Rebooting]
+                                      |
+                                      V
+                              [DefaultSession]
+
+FILE LOCATIONS (Analysis Documentation)
+---------------------------------------
+Main Analysis:  RX8_Flash_Reprogramming_Analysis.txt (41 KB, 1242 lines)
+Quick Ref:      FLASH_REPROGRAMMING_QUICKREF.txt (this file)
+Security Ref:   RX8_UDS_Security_Analysis.txt
+EEPROM Ref:     RX8_EEPROM_Analysis.txt
+Master Index:   RX8_RE_Master_Reference.txt
+
+ALGORITHM REFERENCE
+-------------------
+calculate_checksum @ 0x011A:
+  Simple additive checksum with 8-bit rotation
+  Used for serial frame validation
+
+ROM CRC32 @ 0x7E000:
+  Standard CCITT-32 polynomial (0x04C11DB7)
+  Applied to firmware region 0x00000-0x7DFFF
+
+TOOL IMPLEMENTATION RESOURCE REQUIREMENTS
+------------------------------------------
+Memory:        < 10 MB (for file buffering)
+CPU:           Standard (no special requirements)
+CAN Interface: PCAN, Peak, KVASER, or socketcan compatible
+Language:      Python + C drivers recommended
+UI:            Flask web or Qt desktop
+
+================================================================================
+END QUICK REFERENCE
+================================================================================

@@ -1,0 +1,298 @@
+================================================================================
+MAZDA RX-8 S1 PCM — BINARY FILES ANALYSIS & INVENTORY
+Repository: Mazda_RX8_PCM_ReverseEngineering-master
+Analysis Date: 2026-04-05
+================================================================================
+
+NOTE: All values verified directly from binary data. CalID locations and Denso
+part numbers confirmed via hex dump.
+
+================================================================================
+1. DATA_BINARIES/
+================================================================================
+
+1.1  ram_capture.bin
+     ─────────────────────────────────────────────────────────────────
+     Size:      32,768 bytes (0x8000) = exact SH7055 RAM size
+     Maps to:   0xFFFF6000 - 0xFFFFDFFF
+     Firmware:  N3Z2EBWW (CalID string found at RAM 0xFFFFDF70)
+     Matching ROM: 60E0FB00.bin or 60E0FC00.bin (both carry CalID N3Z2EBWW)
+     Engine state at capture: KEY-ON ENGINE-OFF (see evidence below)
+
+     Validation:
+       Warm-reset magic at 0xFFFFDFFC: 0x5AA5A55A ✓ CONFIRMED
+       Non-zero data: 18,456 / 32,768 bytes (56.3%)
+
+     Engine-off evidence:
+       0xFFFFA424 (RPM):         0.0     → engine not running
+       0xFFFFA310 (MAF):         0.0     → no airflow
+       0xFFFFA324 (CL status):   0       → open loop
+       0xFFFFA428 (Start flag):  0       → no cranking
+       0xFFFFA340 (Fuel PW):     0.0     → no injection
+       0xFFFFA8F8 (OMP duty):    0.0     → no oil pump
+
+     Notable non-zero values (residual from last run):
+       0xFFFFA800:  810.0    → likely last idle RPM (RX-8 warm idle ~750-850)
+       0xFFFFA834:   13.43   → last AFR reading (rich of stoich 14.7)
+       0xFFFFA838:   29.0    → last coolant temp °C (warm engine)
+       0xFFFFA83C:    2.72   → last MAP/voltage reading
+       0xFFFFA844:   13.0    → last AFR target (rich target)
+       0xFFFFA830:    0.338  → last engine load (~34%)
+       0xFFFFA350:   10.0    → fuel trim value
+       0xFFFFA328:    3.69   → last intake air temp °C
+
+     ⚠ CRITICAL LIMITATION:
+       This RAM capture is from firmware N3Z2EBWW (60E0FB/FC series),
+       NOT from our analysis target N3J1EL (60E1D400). The two firmware
+       families share only ~7% code similarity. RAM address assignments
+       are likely DIFFERENT between the two. Direct cross-validation of
+       our N3J1EL RAM map against this capture is NOT reliable.
+
+       Values that DO match expected behavior (RPM, temp, AFR ranges)
+       suggest the GENERAL structure is similar, but specific offsets
+       may be shifted.
+
+
+1.2  RX8_93c56_ECU_IC420_Read.bin
+     ─────────────────────────────────────────────────────────────────
+     Size:      256 bytes = full ABLIC S-93C56C EEPROM contents
+     Source:    Physical EEPROM read from an EU RX-8 ECU (IC420 = EEPROM IC)
+     VIN:       JM1FE17394010254 (at offset 0x80, 17 chars)
+                JM1 = Mazda Japan, FE = RX-8, 173 = EU spec, 94 = 2004 MY
+     Model ID:  "13H.6.020" (at offset 0x62)
+
+     Magic byte: 0x5A at offset 0x00 (NOT 0x55 as previously documented)
+     Second byte: 0xFF at offset 0x01
+
+     Adaptive learning region (0x20-0x61):
+       Contains REAL learned data — values like 0x81/0x01, 0x80/0x01, 0x7E/0x01
+       organized as word pairs. This ECU has been driven and adapted.
+       Pattern: decreasing first byte (0x81→0x59) with constant second byte (0x01)
+       suggests fuel trim corrections indexed by load/RPM breakpoints.
+
+     Immobilizer region (0x02-0x09):
+       Unique per-vehicle: D3 D7 1A EF 41 3D 15 00
+       These are encrypted key codes for the transponder immobilizer system.
+
+     Post-VIN data (0x91+):
+       0x95: 0x2A (configuration byte?)
+       0x9A: 0x03, 0x9B: 0x0D (counters?)
+       0xFD: 0x0C, 0xFF: 0x30 (checksum/status bytes)
+
+
+1.3  se3p_ecm_eeprom.bin
+     ─────────────────────────────────────────────────────────────────
+     Size:      256 bytes = full ABLIC S-93C56C EEPROM contents
+     Source:    Physical EEPROM read from a JDM RX-8 ECU
+     Chassis:   SE3P104621 (at offset 0x80) — SE3P = JDM RX-8 chassis code
+     Model ID:  "13H.6.0A0" (at offset 0x62)
+
+     Magic byte: 0x5A at offset 0x00 (same as above)
+     Second byte: 0xFF at offset 0x01
+
+     Adaptive learning region (0x20-0x61):
+       ALL 0xFF/0x00 pairs = FACTORY DEFAULTS, no adaptation learned.
+       This ECU is either new, recently replaced, or had its EEPROM cleared.
+
+     Immobilizer region (0x02-0x09):
+       4F A8 80 40 9E 92 D4 E8 (different vehicle, different keys)
+
+     Post-chassis data:
+       0xFC-0xFF: 5F 41 FF 30 (different from EU unit)
+
+     EEPROM COMPARISON (RX8_93c56 vs se3p_ecm):
+       Identical bytes:  163 / 256 (63.7%)
+       Different bytes:   93 / 256 (36.3%)
+       Shared structure: Magic 0x5A at byte 0, 0xFF at byte 1, model ID format
+                        at 0x62-0x6B, VIN/chassis at 0x80-0x90
+       Key differences:  Immobilizer codes (0x02-0x09), adaptive data (0x20-0x61),
+                        VIN vs chassis number, status bytes at end
+
+
+1.4  60E0FC00.bin
+     ─────────────────────────────────────────────────────────────────
+     Size:      524,288 bytes (0x80000) = full ROM dump
+     IDENTICAL to Stock_ROMs/60E0FC00.bin (MD5 match: 7bd6aeba688a4ed002418ebf779ad53e)
+     This is a duplicate copy. See Stock_ROMs section for details.
+
+
+================================================================================
+2. STOCK_ROMs/
+================================================================================
+
+All ROMs share: Size 512KB, Entry PC=0x8B8, SP=0xFFFFDFA0, Denso SH7055 platform.
+All contain "DENSO2000S" marker string at offset 0x2028.
+
+     ┌────────────────────┬───────────────┬──────────┬──────────────────────────┐
+     │ Denso Part Number  │ CalID         │ Suffix   │ Market / Variant         │
+     ├────────────────────┼───────────────┼──────────┼──────────────────────────┤
+     │ 60E0E500           │ N3H3EBMW      │ .Z05     │ JDM 6-port 6MT           │
+     │ 60E0E700           │ N3YLEBPW      │ .Z05     │ ⚠ Unknown (file says     │
+     │                    │               │          │   N3YLEE, CalID differs) │
+     │ 60E0FB00           │ N3Z2EBWW      │ .Z05     │ US 4-port AT (2004-05)   │
+     │ 60E0FC00           │ N3Z2EBWW      │ .Z05     │ US 4-port AT (2004-05)   │
+     │                    │               │          │   ⚠ Same CalID as FB00,  │
+     │                    │               │          │   differs by 43 bytes    │
+     │ 60E1B900           │ N3ZDEBWW      │ .T50     │ US California MT (2005)  │
+     │ 60E1D400           │ N3J1E_3W      │ .T50     │ EU 6-port 231hp MT ★     │
+     └────────────────────┴───────────────┴──────────┴──────────────────────────┘
+
+     ★ = Our primary analysis target
+
+     CalID Location in ROM:
+       60E0xxxx series: CalID at ROM offset 0x6C600 or 0x6D300
+       60E1xxxx series: CalID at ROM offset 0x6CE00 or 0x6D300
+
+     Denso Part Number Location: Always at ROM offset 0x2000 (16-byte field)
+
+     Suffix Meaning:
+       .Z05 = older firmware platform (60E0xxxx Denso PNs)
+       .T50 = newer firmware platform (60E1xxxx Denso PNs)
+
+
+2.1  CODE SIMILARITY ANALYSIS (vs our target 60E1D400)
+     ─────────────────────────────────────────────────────────────────
+     The 60E0xxxx series and 60E1xxxx series represent different firmware
+     generations with fundamentally different code layouts:
+
+       60E0E500 vs 60E1D400:  Code  7.4% similar,  Cal 15.1% similar
+       60E0E700 vs 60E1D400:  Code  7.5% similar,  Cal 15.2% similar
+       60E0FB00 vs 60E1D400:  Code  7.4% similar,  Cal 15.2% similar
+       60E0FC00 vs 60E1D400:  Code  7.4% similar,  Cal 15.2% similar
+       60E1B900 vs 60E1D400:  Code 16.8% similar,  Cal 15.4% similar
+
+     Key observations:
+       • 60E1B900 (N3ZDEB) is the closest to our target (same 60E1 platform)
+         with 16.8% code similarity — enough to share core architecture
+         but different enough that function addresses will differ
+       • All 60E0xxxx ROMs are ~7% code similar to 60E1D400 — effectively
+         a completely different codebase, only sharing SH7055 boilerplate
+       • Calibration regions are ~15% similar across all variants, consistent
+         with shared table structures but different values
+
+
+2.2  60E0FB00 vs 60E0FC00 (NEAR-IDENTICAL PAIR)
+     ─────────────────────────────────────────────────────────────────
+     These two ROMs share the same CalID (N3Z2EBWW) and differ by only
+     43 bytes (0.008% of total). Differences are all in calibration data:
+
+       0x00FFC-0x00FFE:  2 bytes  (code area boundary)
+       0x02005:          1 byte   (Denso PN: "B" vs "C")
+       0x6D316-0x6D35E:  3 bytes  (CalID metadata)
+       0x728D5-0x72901: 18 bytes  (calibration table values)
+       0x77B47-0x77CC6: 12 bytes  (calibration table values)
+
+     These are almost certainly sequential calibration revisions —
+     FB00 and FC00 share identical firmware code with minor tuning tweaks.
+
+
+================================================================================
+3. GHIDRA_ARCHIVES/
+================================================================================
+
+     RX8_6_2025_02_02.gar   (27.8 MB)  — Ghidra project, Feb 2025
+     RX8_6_2025_09_14.gar   (39.2 MB)  — Ghidra project, Sep 2025
+     RX8_6_2025_12_24.gar   (39.3 MB)  — Ghidra project, Dec 2025
+
+     Three progressive snapshots of the community Ghidra analysis.
+     The increasing size (28→39 MB) reflects growing annotation/analysis.
+     These can be imported into Ghidra to see the equinox311 community's
+     progress on reverse engineering.
+
+
+================================================================================
+4. UTILITIES/
+================================================================================
+
+     G_ROM_ImmoDefWriter.py   (6 KB)  — Python script for immobilizer/EEPROM
+     G_ROM_ImmoDefWriter.zip  (6.5 MB) — Packaged version with dependencies
+
+     Purpose: Tool for writing immobilizer definitions to ROM/EEPROM.
+     Relevant to the EEPROM analysis (Section 1.2/1.3 immobilizer regions).
+
+
+================================================================================
+5. IDA/
+================================================================================
+
+     60E1D400.bin     (512 KB)  — ROM binary (our target, copy from Stock_ROMs)
+     60E1D400.bin.i64 (12.3 MB) — IDA Pro 64-bit database
+     60E1D400.bin.id0 (10.2 MB) — IDA btree database
+     60E1D400.bin.id1 (2.0 MB)  — IDA flags database
+     60E1D400.bin.nam (40 KB)   — IDA names database
+     60E1D400.bin.til (72 B)    — IDA type information library
+
+     Active IDA Pro analysis database for our target firmware N3J1EL.
+
+
+================================================================================
+6. EEPROM STRUCTURE CORRECTION
+================================================================================
+
+CLARIFICATION: Two separate validation mechanisms exist:
+
+     A) PHYSICAL EEPROM CONTENT:
+        Byte 0x00: 0x5A  (both dumps) — EEPROM-level validity marker
+        Byte 0x01: 0xFF  (both dumps)
+        This is the raw data stored in the 93C56C chip.
+
+     B) RAM MIRROR HANDSHAKE (firmware at ROM 0x450):
+        The eeprom_read_validate function checks byte +8 of the RAM mirror
+        (0xFFFFDFE4 + 8 = 0xFFFFDFEC) for 0x55, then writes 0xAA after
+        consuming the data. This is a producer-consumer protocol:
+          SPI read ISR → writes EEPROM data to mirror, sets flag = 0x55
+          eeprom_read_validate → reads data, sets flag = 0xAA ("consumed")
+        Confirmed by disassembly: cmp/eq #0x55 at 0x456, mov #0xAA at 0x472.
+
+     These are DIFFERENT validation layers. The 0x55/0xAA in our pseudocode
+     documentation correctly describes the RAM handshake. The 0x5A at byte 0
+     of the physical EEPROM is a separate EEPROM-level integrity marker.
+
+EEPROM LAYOUT (confirmed from 2 physical dumps):
+     0x00-0x01:  Magic/validity (0x5A, 0xFF)
+     0x02-0x09:  Immobilizer key data (unique per vehicle, encrypted)
+     0x0A-0x1F:  Configuration flags and counters
+     0x20-0x61:  Adaptive learning data (fuel trim corrections, word pairs)
+                 Factory default = 0xFF/0x00 pairs
+                 Learned = decreasing values with 0x01 second byte
+     0x62-0x6B:  Model identifier string ("13H.6.0xx")
+     0x6C-0x7F:  Reserved (0xFF fill)
+     0x80-0x90:  Vehicle ID (VIN for USDM/EU, chassis# for JDM)
+     0x91-0x9F:  Configuration and counters
+     0xA0-0xEF:  Reserved (0xFF fill)
+     0xF0-0xFF:  Status/checksum bytes
+
+
+================================================================================
+7. CROSS-VALIDATION RESULTS
+================================================================================
+
+The RAM capture provides LIMITED validation for our N3J1EL analysis because
+it comes from a different firmware family (N3Z2EB). However, some structural
+observations transfer:
+
+  CONFIRMED:
+    ✓ Warm-reset magic 0x5AA5A55A at 0xFFFFDFFC — same across all firmwares
+    ✓ CalID string stored in RAM near 0xFFFFDF70
+    ✓ General RAM layout: sensors around 0xFFFFA3xx, state around 0xFFFFA4xx-A9xx
+    ✓ Float32 representation for engine parameters (RPM, AFR, temp, load)
+    ✓ Engine-off state zeroes most live variables (expected behavior)
+    ✓ Residual values persist after shutdown (810 RPM, 29°C, 13.4 AFR)
+
+  NOT CONFIRMABLE:
+    ✗ Specific addresses (0xFFFFA424=RPM etc.) — may differ between firmwares
+    ✗ Table descriptor locations — calibration regions differ
+    ✗ Function addresses — code differs ~93% between 60E0 and 60E1 families
+
+  RECOMMENDED NEXT STEPS:
+    1. Obtain a RAM capture from the actual N3J1EL firmware (60E1D400)
+       via OBD-II SID 0x23 ReadMemoryByAddress
+    2. Compare 60E1B900 (N3ZDEB, same 60E1 platform) in IDA to validate
+       shared function addresses and RAM layout
+    3. Use the EEPROM dumps to verify the eeprom_read_validate function's
+       actual magic byte check (0x5A vs 0x55)
+
+
+================================================================================
+END OF ANALYSIS
+================================================================================

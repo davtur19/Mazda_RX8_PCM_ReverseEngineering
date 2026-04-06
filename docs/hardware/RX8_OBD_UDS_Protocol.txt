@@ -1,0 +1,187 @@
+================================================================
+  RX-8 S1 PCM — OBD / UDS COMMUNICATION PROTOCOL
+================================================================
+
+================================================================
+1. CAN TRANSPORT
+================================================================
+
+  Request  CAN ID:  0x07E0  (tester → ECU)
+  Response CAN ID:  0x07E8  (ECU → tester)
+  Framing: ISO 15765 (ISO-TP), padded frames
+  OBD-II connector: Pin 6 CAN-H, Pin 14 CAN-L
+
+  Source: ConnorRigby/rx8-ecu-dump (UDS.h)
+
+================================================================
+2. UDS SERVICES — CONFIRMED IN FIRMWARE
+================================================================
+
+  The following SIDs are confirmed by cmp/eq instructions in
+  the default dispatch table at ROM 0x1479:
+
+  SID   Service                     Response
+  ----  --------------------------  --------
+  0x10  DiagnosticSessionControl    0x50
+  0x11  ECUReset                    0x51
+  0x22  ReadDataByIdentifier        0x62
+  0x27  SecurityAccess              0x67
+  0x34  RequestDownload             0x74
+  0x36  TransferData                0x76
+  0x37  RequestTransferExit         0x77
+  0x3B  (unknown Mazda custom)      0x7B
+  0x3E  TesterPresent               0x7E
+
+  Additionally found via cmp/eq at 0x5647E (separate handler):
+  0x14  ClearDiagnosticInformation  0x54
+
+================================================================
+3. SID 0x23 — ReadMemoryByAddress
+================================================================
+
+  NOT found in the default dispatch table (no cmp/eq #0x23
+  anywhere in the 512KB ROM).
+
+  However, ConnorRigby's rx8-ecu-dump uses SID 0x23 successfully
+  after entering session 0x85 + security access. This means:
+
+    a) The handler is in the SH7055 mask ROM / boot ROM area
+       (not part of the 512KB application firmware), OR
+    b) It is dynamically enabled by session state in a way
+       that doesn't use a simple cmp/eq comparison
+
+  In practice: SID 0x23 WORKS after security unlock.
+  The mechanism is confirmed by working tools, even though
+  the handler is not visible in the application firmware.
+
+================================================================
+4. SECURITY ACCESS (SID 0x27)
+================================================================
+
+  TX: [0x27, 0x01]
+  RX: [0x67, 0x01, seed_b0, seed_b1, seed_b2]
+
+  Key derivation:
+    Secret: {0x4D, 0x61, 0x7A, 0x64, 0x41} ("MazdA")
+    64-iteration bit-manipulation on 24-bit seed → 3-byte key
+
+  TX: [0x27, 0x02, key_b0, key_b1, key_b2]
+  RX: [0x67, 0x02]
+
+  Source: ConnorRigby/rx8-ecu-dump, librx8.cpp::calculateKey()
+
+================================================================
+5. DIAGNOSTIC SESSIONS (SID 0x10)
+================================================================
+
+  0x81   Default session
+  0x85   Extended diagnostic (required for 0x23 / 0x27)
+  0x87   Programming session (flash reprogramming)
+
+  Source: ConnorRigby/rx8-ecu-dump, librx8.h
+
+================================================================
+6. READING RAM (SID 0x23)
+================================================================
+
+  Prerequisite: session 0x85 + security access
+
+  TX: [0x23, addr_b0, addr_b1, addr_b2, size]
+  RX: [0x63, data...]
+
+  Example — full RAM snapshot (~5 seconds):
+    ecudump --download=ramdump.bin \
+            --start-address=0xffff6000 \
+            --transfer-size=0x7D00
+
+================================================================
+7. ROM DUMP SEQUENCE
+================================================================
+
+  1.  [0x10, 0x85]               Enter extended session
+  2.  [0x27, 0x01] → key calc    Security access
+  3.  [0xB1, 0x00, 0xB2, 0x00]  Enter bootloader mode (Mazda custom)
+  4.  [0x34, ...]                RequestDownload (from offset 0x2000)
+  5.  [0x36, seq, ...]           TransferData (chunked loop)
+  6.  [0x37]                     RequestTransferExit
+
+  Offset 0x0000-0x1FFF is not readable via this method.
+  Likely protected boot ROM or first flash block.
+  Full dump (~504KB from 0x2000): ~2 minutes.
+
+================================================================
+8. DATALOGGING
+================================================================
+
+  Repeated SID 0x23 requests for specific RAM addresses.
+  Each request reads a small block (2-4 bytes per variable).
+
+  Equinox311's RomRaider fork supports this as "MazdaCAN"
+  protocol with logger_rx8_defs.xml defining which RAM
+  addresses to poll and how to scale the raw values.
+
+  Known DIDs (SID 0x22):
+    0xF190   VIN
+    0xF18C   Calibration ID
+
+================================================================
+9. FIRMWARE DISPATCH TABLE (ROM 0x1479)
+================================================================
+
+  Confirmed by manual disassembly of cmp/eq chain:
+
+    0x1486: cmp/eq #0x10, R0   → DiagnosticSessionControl
+    0x148A: cmp/eq #0x27, R0   → SecurityAccess
+    0x148E: cmp/eq #0x3E, R0   → TesterPresent
+    0x1492: cmp/eq #0x11, R0   → ECUReset
+    0x1496: cmp/eq #0x22, R0   → ReadDataByIdentifier
+    0x149A: cmp/eq #0x3B, R0   → unknown custom
+    0x149E: cmp/eq #0x34, R0   → RequestDownload
+    0x14A2: cmp/eq #0x36, R0   → TransferData
+    0x14A6: cmp/eq #0x37, R0   → RequestTransferExit
+
+  All flash handlers (0x34/0x36/0x37) receive R4 = 0xFFFFD3F0
+  (diagnostic CAN message buffer in RAM).
+
+================================================================
+10. TOOLS
+================================================================
+
+  Hardware:
+    Tactrix OpenPort 2.0 or any J2534 passthru device
+
+  Software:
+    rx8-ecu-dump    ROM/RAM dump CLI         (ConnorRigby)
+    RomRaider       ROM editor + datalogger  (equinox311 RX-8 fork)
+    EcuFlash        ROM flashing             (Tactrix)
+    VersaTuner      Tuning + logging         (commercial)
+    MazdaEdit       Tuning                   (commercial)
+
+================================================================
+11. CREDITS
+================================================================
+
+  ConnorRigby — rx8-ecu-dump: UDS protocol, security access
+    algorithm, SID 0x23/0x34 implementation.
+    https://github.com/ConnorRigby/rx8-ecu-dump
+
+  equinox311 (Garrett) — RX8Defs: RomRaider definitions,
+    MazdaCAN logger, community RE coordination.
+    https://github.com/equinox311/RX8Defs
+    https://github.com/equinox311/Mazda_RX8_PCM_ReverseEngineering
+
+  Rx8Man — Original RX8Defs, early ROM table definitions.
+    https://github.com/Rx8Man/RX8Defs
+
+  madox.net — Early Mazda CAN bus RE (2008).
+    http://www.madox.net/blog/projects/mazda-can-bus/
+
+  OpenECU community — Flash protocol discussion.
+    http://forums.openecu.org/viewtopic.php?f=3&t=785
+
+  rx8club.com — Community RE thread.
+    https://www.rx8club.com/series-i-engine-tuning-forum-63/
+    open-source-s1-rx-8-ecu-reverse-engineering-data-logging-
+    tuning-users-guide-276137/
+
+================================================================

@@ -1,0 +1,794 @@
+================================================================================
+MAZDA RX-8 S1 (N3J1EL) IGNITION TIMING CONTROL - COMPLETE REVERSE ENGINEERING
+Renesas SH7055 (Big-Endian), Firmware: 60E1D400.bin
+================================================================================
+
+EXECUTIVE SUMMARY
+=================
+The RX-8 S1 ignition system uses a dual-spark architecture for 2 rotors with
+leading and trailing plugs per rotor. The main timing control function
+(ignition_timing_calc_E7F8) orchestrates ROM table interpolation, knock
+retard application, and multi-factor advance corrections. Knock detection
+(knock_detection_processing_F770) implements per-rotor threshold comparison
+with cascading retard strategies.
+
+================================================================================
+1. PRIMARY IGNITION TIMING CALCULATION FUNCTION
+================================================================================
+
+Function: ignition_timing_calc_E7F8
+Address:  0xE7F8
+Size:     0x364 bytes (844 bytes)
+Callers:  Main engine control loop dispatchers
+
+ALGORITHM OVERVIEW
+------------------
+Step 1: Load knock and system flags
+  - Knock flag (0xFFFFB5AA): 1 if knock detected in current cycle
+  - Knock retard margin (0xFFFFB5CC): Added to prevent threshold exceedance
+  - Idle flag (0xFFFFB5A4): Selects retarded idle timing table
+  - Safe mode flag (0xFFFFA4A1): Forces conservative fixed timing if set
+
+Step 2: Load engine scalar values via FPU
+  - FR12 ← Base timing from leading table (multiplier mode)
+  - FR13 ← Load scalar (manifold pressure) at 0xFFFFAA10
+  - FR14 ← Knock retard margin at 0xFFFFB5CC
+  - FR15 ← Fuel temperature adjustment at 0xFFFFBC1C
+
+Step 3: Safety gates (prevent impossible timing states)
+  Gate 1: If knock flag OR knock enable flag already set → Skip base table lookup
+  Gate 2: If base timing > upper boundary (0x6D0A4) → Skip main calculation
+  Gate 3: If acceleration enrichment (0xFFFFB5B8) > threshold → Inhibit advance
+  Gate 4: If computed timing negative → Clamp to zero
+
+Step 4: Base timing table interpolation (2D lookup via table2d_interpolate)
+  Address: Table at 0x6D096 (leading) or 0x6DDD4 (trailing)
+  Axes:    RPM (0xFFFFA424), Load (0xFFFFAA10)
+  Output:  FR4 = interpolated base timing advance (typically 0-40 degrees BTDC)
+  FPU ops: fmov, fcmp/gt, fadd, fsub (IEEE 754 single precision)
+
+Step 5: Apply conditional timing adjustments (7 factors total)
+  Each adjustment is gated by a system enable flag and applies an additive offset:
+
+  5a) Knock Correction (-2 to -8 degrees, from 0x6D0B0)
+      Gate: 0xFFFFB5AA=1 (knock detected) AND 0xFFFFB5AC=1 (enable)
+      Table: loc_6D0B0
+      Result: FR4 -= correction value (retard on knock)
+
+  5b) EGR Adjustment (-2 to -5 degrees, from 0x6D0B6)
+      Gate: 0xFFFFCCE1=1 (EGR active)
+      Table: loc_6D0B6
+      Effect: Recirculated exhaust gas slows flame speed; retard compensates
+
+  5c) "VVT" Phase Adjustment (-3 to +5 degrees, from 0x6D0BC)
+      Gate: 0xFFFFB340=1 ("VVT" system active)
+      Table: loc_6D0BC
+      Effect: ⚠ NOT actual VVT — Wankel has no valves. Likely intake geometry
+      or emission actuator phase offset requiring timing compensation.
+
+  5d) Fuel Mixture Correction (-1 to +2 degrees, from 0x6D0E2)
+      Gate: 0xFFFFA7C8=1 (fuel diagnostics running)
+      Table: loc_6D0E2
+      Effect: Lean→advance for speed, Rich→retard for stability
+
+  5e) Turbo Boost Correction (-5 to -10 degrees, from 0x6D0C0)
+      Gate: 0xFFFFC600=1 (not used on natural aspirated RX-8)
+      Table: loc_6D0C0
+      Note: Future/variant expansion for supercharged RX-8R
+
+  5f) Knock Safety Margin (1-3 degrees, from 0x6D0E8)
+      Gate: 0xFFFFBB38=1 (knock control enable) AND margin not recently applied
+      Table: loc_6D0E8
+      Purpose: Always-on conservative offset prevents first-knock scenarios
+
+  5g) Cold Start Boost (2-8 degrees, from 0x6D0C6)
+      Gate: Cold start flag (tracked internally after engine start)
+      Table: loc_6D0C6
+      Effect: Extra advance during warm-up enrichment phase
+
+ROM TABLE CALIBRATION ADDRESSES (6CE00-7E000 range)
+---------------------------------------------------
+  0x6D096:   Leading spark advance base table (load × RPM interpolation)
+  0x6D0A4:   Upper timing boundary (typical: 40-45 degrees BTDC)
+  0x6D0A6+2: Lower timing boundary (typical: 5-10 degrees BTDC for idle)
+  0x6D0B0:   Knock correction table (-2 to -8 deg penalty)
+  0x6D0B2:   Secondary EGR/"VVT" fine adjustment offset
+  0x6D0B6:   EGR penalty table (-2 to -5 deg retard)
+  0x6D0BC:   "VVT" phase adjustment table (-3 to +5 deg) ⚠ not actual VVT
+  0x6D0C0:   Boost pressure correction (supercharger variant)
+  0x6D0C4:   Trailing timing ceiling enforcement
+  0x6D0C6:   Cold start advance boost (+2 to +8 deg)
+  0x6D0D4:   Knock counter threshold (conservative limit trigger)
+  0x6D0D4+2: Sqrt-limited retard conservative cap
+  0x6D0E2:   Fuel mixture feedback correction
+  0x6D0E8:   Knock safety margin floor (1-3 degrees)
+  0x6DDD4:   Trailing spark advance base table (secondary rotor plug)
+
+Step 6: TRAILING SPARK SYNTHESIS (Wankel unique feature)
+  Leading advance stored at: 0xFFFFA458 (leading rotor channel)
+  Trailing advance = Leading + secondary offset
+  Storage: Trailing → 0xFFFFA448 (trailing rotor channel)
+  Offset constraint: FR14 (knock limit) enforced as ceiling
+  If FR14 > trailing_offset → Use conservative cap from 0x6D0C4
+
+Step 7: KNOCK RETARD DIVISOR PATH
+  If knock flag set (0xFFFFB5AA=1):
+    Use divisor from loc_699BC (fractional reduction per knock)
+    Example: 0.85 = reduce advance by 15% per detection
+    Applied via fpu_multiply_accumulate
+  Else (no knock):
+    Use slower recovery divisor at loc_699BC
+    Different slope for knock suppression vs recovery phase
+
+Step 8: COIL DWELL TIME CALCULATION
+  If knock not detected (r12=0):
+    Divisor at loc_699FE+2 determines primary coil ON-time
+    Longer dwell = stronger magnetic field = better combustion at high load
+    Stored at: 0xFFFFA480
+
+Step 9: KNOCK COUNTER SAFEGUARD
+  If knock counter > threshold (from 0x6D0D4):
+    Apply sqrt() reduction to prevent cascade detonation
+    Conservative path: Prevents aggressive recovery
+    Storage: 0xFFFFA44C
+
+Step 10: FINAL OUTPUT STAGING
+  0xFFFFA458: Leading spark advance (for rotor A leading coil)
+  0xFFFFA448: Trailing spark advance (for rotor A trailing coil)
+  0xFFFFA45C: Dwell time adjustment
+  0xFFFFA496: Knock counter (saturated 16-bit)
+
+RAM STATE VARIABLES (0xFFFF6000-0xFFFFDFFF range)
+--------------------------------------------------
+0xFFFFB5AA:   Knock flag (1=knock detected this cycle)
+0xFFFFB5AC:   Knock enable gate (1=knock control active)
+0xFFFFB5B8:   Acceleration enrichment scalar (0.0-1.0 float)
+0xFFFFB5CC:   Knock retard margin (degrees float)
+0xFFFFBC1C:   Fuel temperature adjustment (degrees float)
+0xFFFFB5A4:   Idle flag (1=at idle RPM)
+0xFFFFA4A1:   Safe mode flag (1=conservative fixed timing)
+0xFFFFAA10:   Load scalar (manifold pressure normalized 0.0-1.0)
+0xFFFFA424:   RPM interpolation index (0-100)
+0xFFFFA458:   Leading spark advance output (16-bit signed)
+0xFFFFA448:   Trailing spark advance output (16-bit signed)
+0xFFFFA45C:   Dwell time adjustment
+0xFFFFA496:   Knock counter (saturated 0-65535)
+0xFFFFA4B4:   Per-channel knock detection state base (0x58 bytes × 4 channels)
+0xFFFFA571:   Knock detection enabled (hardware gate)
+0xFFFFA56D:   Current injector timing phase
+0xFFFFA56E:   VVT solenoid status word
+0xFFFFB340:   VVT system active flag
+0xFFFFCCE1:   EGR active flag
+0xFFFFA7C8:   Fuel diagnostics running flag
+0xFFFFBB38:   Knock control enable
+0xFFFFC600:   Boost/supercharger flag
+
+WANKEL-SPECIFIC FEATURES
+------------------------
+RX-8 dual-spark architecture requires coordinated timing:
+  - Leading plug fires ~10-15 degrees BTDC in each rotor (aggressive flame propagation)
+  - Trailing plug fires ~40-60 degrees ATDC in each rotor (cleanup combustion)
+  - Both plugs have separate coils but share timing table structure
+  - Trailing timing computed as: Leading + secondary offset (0x6D0C4)
+  - Each rotor (2 total) gets independent ignition output (4 spark events total per 2-rotor cycle)
+
+PSEUDOCODE (Main Algorithm)
+----------------------------
+```
+function ignition_timing_calc_E7F8():
+  // Load system flags and scalars
+  knock_active = RAM[0xFFFFB5AA]
+  knock_margin = RAM[0xFFFFB5CC]  // float in degrees
+  fuel_temp_adj = RAM[0xFFFFBC1C] // float in degrees
+  load_scalar = RAM[0xFFFFAA10]   // 0.0-1.0 normalized
+  rpm_index = RAM[0xFFFFA424]
+  idle_flag = RAM[0xFFFFB5A4]
+  safe_mode = RAM[0xFFFFA4A1]
+
+  // Gate 1: Safe mode check
+  if (safe_mode == 1 && knock_active == 0) {
+    base_timing = 2.0  // Conservative default
+    goto enforce_limits
+  }
+
+  // Gate 2-4: Boundary checks
+  if (knock_active || knock_enable) {
+    goto enforce_limits
+  }
+
+  // Step 4: Base timing interpolation
+  base_timing = table2d_interpolate(
+    table=0x6D096 (leading timing),
+    rpm_index=rpm_index,
+    load_scalar=load_scalar
+  )
+
+  // Gate 2: Upper boundary enforcement
+  upper_limit = read_float(0x6D0A4)
+  if (base_timing > upper_limit) {
+    goto enforce_limits
+  }
+
+  // Gate 3: Acceleration enrichment check
+  accel_scalar = RAM[0xFFFFB5B8]
+  if (accel_scalar > threshold_from_6D0A6) {
+    goto enforce_limits
+  }
+
+  advance_sum = base_timing
+
+  // Step 5: Apply conditional adjustments
+  if (knock_active && knock_enable) {
+    knock_corr = read_float(0x6D0B0)
+    advance_sum -= knock_corr
+  }
+
+  if (EGR_active) {
+    egr_penalty = read_float(0x6D0B6)
+    advance_sum -= egr_penalty
+  }
+
+  if (VVT_active) {
+    vvt_adj = read_float(0x6D0BC)
+    advance_sum += vvt_adj
+  }
+
+  if (fuel_diag_active) {
+    fuel_corr = read_float(0x6D0E2)
+    advance_sum += fuel_corr
+  }
+
+  if (boost_active) {
+    boost_penalty = read_float(0x6D0C0)
+    advance_sum -= boost_penalty
+  }
+
+  if (knock_control_enable && !margin_applied) {
+    knock_margin = read_float(0x6D0E8)
+    advance_sum -= knock_margin
+  }
+
+  if (cold_start_flag) {
+    cold_boost = read_float(0x6D0C6)
+    advance_sum += cold_boost
+  }
+
+  // Step 6: Trailing spark synthesis
+  RAM[0xFFFFA458] = advance_sum  // Leading timing
+  trailing_offset = read_float(0x6D0C4)
+  trailing_timing = advance_sum + trailing_offset
+
+  // Enforce trailing ceiling
+  if (knock_margin > trailing_offset) {
+    trailing_timing = min(trailing_timing, cap_from_6D0C4)
+  }
+  RAM[0xFFFFA448] = trailing_timing  // Trailing timing
+
+  // Step 7: Knock retard divisor
+  if (knock_active) {
+    divisor = read_float(loc_699BC)
+    retard_adjustment = advance_sum * divisor
+  } else {
+    divisor = read_float(loc_699BC)  // Slower recovery
+    retard_adjustment = advance_sum * divisor
+  }
+
+  // Step 8: Dwell calculation
+  if (!knock_active) {
+    dwell_divisor = read_float(loc_699FE+2)
+    dwell_time = base_timing / dwell_divisor
+    RAM[0xFFFFA480] = dwell_time
+  }
+
+  // Step 9: Knock counter safeguard
+  knock_counter = RAM[0xFFFFA496]
+  knock_threshold = read_word(0x6D0D4)
+  if (knock_counter > knock_threshold && knock_active == 0) {
+    conservative_cap = read_float(0x6D0D4+2)
+    advance_sum = sqrt(advance_sum) * conservative_cap
+    RAM[0xFFFFA44C] = advance_sum
+  }
+
+  return
+
+enforce_limits:
+  RAM[0xFFFFA458] = boundary_from_6D096  // Minimum safe timing for rotor channel
+```
+
+================================================================================
+2. KNOCK DETECTION PROCESSING FUNCTION
+================================================================================
+
+Function: knock_detection_processing
+Address:  0xF770
+Size:     0x320 bytes (800 bytes)
+Called by: Spark timing scheduler every combustion event
+
+ALGORITHM OVERVIEW
+-------------------
+Processes knock sensor data for all 2 rotors.
+Uses per-rotor pulse window comparison: compares knock sensor signal energy
+against calibrated thresholds.
+
+PER-ROTOR DATA STRUCTURE (0x58 bytes per rotor at 0xFFFFA4B4)
+-------------------------------------------------------------
+Offset  Size  Field                   Description
+------  ----  -----                   -----------
++0x00   1     rotor_index             Rotor ID (0-1; 0=Rotor A, 1=Rotor B)
++0x01   1     knock_status            0=no knock, 1=margin exceeded, 2=active
++0x02   1     retard_applied          Boolean: knock retard already active
++0x03   1     retard_flag             1=retard required on this cycle
++0x04   2     knock_margin            Margin value (diff between threshold/actual)
++0x06   1     vvt_phase_mask          Bit mask for VVT interaction
++0x07   1     previous_state          State tracker for hysteresis
++0x08   4     knock_window_ptr        Pointer to pulse waveform data
++0x0C   4     knock_threshold         Sensitivity threshold value (0x1680000)
++0x10   4     max_knock_level         Peak energy in window (compared vs threshold)
++0x14   1     margin_calc_result      Final margin calculation
+... (rest padding to 0x58)
+
+INITIALIZATION (knock_detection_processing lines F7C6-F810)
+-----------------------------------------------------------
+For each rotor (2 total):
+  1. Clear knock flag at 0xFFFFA571
+  2. Zero all per-rotor structures at base 0xFFFFA4B4
+  3. Set threshold constant at 0x1680000 for each channel
+  4. Pre-load ROM tables:
+     - Timing lookup at 0x4ECE0 (returns timing for phase)
+     - VVT mask lookup at 0x4ECC0 (returns phase bits)
+
+MAIN KNOCK DETECTION LOOP (F822-F910)
+--------------------------------------
+For each rotor:
+  1. Call pulse_window_compute() to extract knock sensor pulse energy
+     - Input: knock_window_ptr from per-rotor structure
+     - Output: Absolute peak magnitude in knock waveform
+  2. Compare max_knock_level vs threshold (0x1680000)
+     - If max_knock_level > threshold → KNOCK DETECTED
+       * Increment knock counter via saturated_add_u16
+       * Calculate margin: (threshold - max_knock_level) / 0xB40000
+       * Set retard_flag = 1 for this rotor
+       * Store margin at offset +0x04
+     - Else → No knock
+       * Zero margin values
+       * Set status = 2 (no knock)
+
+  3. Inject timing phase information
+     - Read current injector timing from 0xFFFFA56D
+     - Compare vs previous value (hysteresis check)
+     - If changed: re-lookup timing table from 0x4ECE0
+
+  4. VVT phase interaction
+     - Read VVT solenoid status at 0xFFFFA56E
+     - Mask against table lookup result at 0x4ECC0
+     - Determine if VVT phase requires special handling for this channel
+
+KNOCK RETARD DISPATCH (F930-FA6E)
+----------------------------------
+After threshold comparison, cascading retard logic:
+
+Stage 1: Check any channel needs retard
+  If ANY channel has retard_flag = 1:
+    Check if retard_flag on primary channel (ch 0)
+    If yes: Apply retard via fpu_multiply_accumulate
+
+Stage 2: Knock counter saturation
+  - Increment saturated knock counter at 0xFFFFA564
+  - Max value: 65535 (saturates, doesn't overflow)
+  - Purpose: Track detonation event frequency
+
+Stage 3: If retard already applied (from previous cycle)
+  If retard_applied == 1:
+    - Don't re-trigger (prevents double-correction)
+    - Instead, escalate to fuel cut strategy
+    - Call fuel_injector_multiplexed_control() to disable injection
+    - This is more aggressive than timing retard
+
+Stage 4: Margin calculation for recovery
+  If knock detected AND retard NOT yet applied:
+    - Calculate margin value: (threshold - actual) / scaling_constant
+    - Use margin to determine retard magnitude
+    - Larger margin = less retard (weak knock)
+    - Small margin = more retard (strong knock)
+
+ROM CALIBRATION ADDRESSES
+------------------------
+0x1E0000:     Period multiplier (converts timer ticks to frequency)
+0x1680000:    Knock detection threshold constant (sensitivity tuning)
+0x4ECE0:      Timing phase lookup table (input: phase index, output: timing)
+0x4ECC0:      VVT mask lookup table (input: phase, output: bit mask)
+
+RAM STATE VARIABLES
+-------------------
+0xFFFFA571:   Knock detection enabled flag (hardware gate)
+0xFFFFA4B4:   Base address for 2× per-rotor structures
+0xFFFFA564:   Global knock counter (saturated 16-bit)
+0xFFFFA56D:   Current injector timing phase
+0xFFFFA56E:   VVT solenoid status (16-bit)
+0xFFFFA4A1:   Safe mode (if set, skip all knock control)
+
+PSEUDOCODE
+----------
+```
+function knock_detection_processing(rotor_index):
+  if (RAM[0xFFFFA571] != 1) {
+    // Knock detection disabled by hardware
+    return
+  }
+
+  // Initialize per-rotor structures
+  for rotor = 0 to 1:
+    rotor_struct = RAM[0xFFFFA4B4 + rotor * 0x58]
+    rotor_struct[0x00] = rotor
+    rotor_struct[0x04] = 0       // Margin
+    rotor_struct[0x02] = 0       // Retard not applied
+    rotor_struct[0x0C] = 0x1680000  // Threshold
+
+  // Main detection loop
+  for rotor = 0 to 1:
+    rotor_struct = RAM[0xFFFFA4B4 + rotor * 0x58]
+
+    // Extract knock pulse energy
+    knock_window = rotor_struct[0x08]  // Pointer to sensor data
+    period_mult = 0x1E0000
+    max_energy = pulse_window_compute(knock_window, period_mult)
+
+    // Threshold comparison
+    threshold = 0x1680000
+    if (max_energy > threshold) {
+      // KNOCK DETECTED
+      knock_counter = saturated_add_u16(RAM[0xFFFFA564], 1)
+      RAM[0xFFFFA564] = knock_counter
+
+      // Calculate margin
+      margin = (threshold - max_energy) / 0xB40000
+      rotor_struct[0x04] = margin
+      rotor_struct[0x02] = 1  // Retard required
+
+      // Increment counter
+      margin_val = margin + 1
+      rotor_struct[0x04] = margin_val
+    } else {
+      // No knock
+      rotor_struct[0x04] = 0
+      rotor_struct[0x02] = 2  // Status: no knock
+    }
+
+    // Phase tracking
+    injector_phase = RAM[0xFFFFA56D]
+    if (injector_phase != ch_struct[0x01]) {
+      timing_index = injector_phase
+      timing = table_lookup(0x4ECE0, timing_index)
+      ch_struct[0x08] = timing
+    }
+
+    // VVT interaction
+    vvt_status = RAM[0xFFFFA56E]
+    vvt_mask = table_lookup(0x4ECC0, ch_struct[0x0C])
+    vvt_masked = vvt_status & vvt_mask
+    if (vvt_masked) {
+      // VVT active on this phase
+      ch_struct[0x06] = 1
+    }
+
+  // Retard dispatch
+  for ch = 0 to 3:
+    if (ch_struct[0x02] == 1) {  // Retard required
+      if (ch_struct[0x03] == 1) {  // Already applied?
+        // Escalate to fuel cut
+        fuel_injector_multiplexed_control(ch_struct)
+      } else {
+        // Apply timing retard
+        retard_magnitude = calculate_retard_from_margin(ch_struct[0x04])
+        apply_knock_retard(retard_magnitude)
+        ch_struct[0x03] = 1  // Mark as applied
+      }
+    }
+```
+
+================================================================================
+3. IGNITION OUTPUT CALCULATION (COIL DRIVER INTERFACE)
+================================================================================
+
+Function: ign_output_calc_main
+Address:  0x884C
+Size:     0x244 bytes (580 bytes)
+Purpose:  Converts timing advance to actual coil charge/fire timing
+Called by: Real-time ignition scheduler (every 0.25ms typically)
+
+ALGORITHM
+---------
+Converts abstract timing advance (degrees) to hardware-specific timing:
+  1. Read current eccentric shaft angle from timer (ATUII_TCNT1A_W register)
+  2. Calculate fire angle = current_angle + timing_advance
+  3. Program timer compare register for coil discharge
+  4. Check dwell time constraints (minimum coil charging time)
+  5. Apply per-rotor corrections (load, temperature)
+  6. Write synchronized to hardware registers
+
+HARDWARE REGISTERS USED
+-----------------------
+0xFFFF8A04:   ATUII_TCNT1A_W (Crank position counter)
+0xFFFF8A08:   ATUII_TSR8_W (Timer status register)
+0xFFFF8A0C:   ATUII_TIER8_W (Timer interrupt enable)
+0xFFFF8A10:   ATUII_DSTR_W (Driver control status)
+
+INTERPOLATION PATHS
+--------------------
+Path 1: Negative timing (retard condition)
+  - Input: advance value from 0xFFFFA458 or 0xFFFFA448
+  - Check bit sign: if negative, apply BACKWARD offset
+  - Example: -5 degrees = fire 5 degrees before nominal
+  - Clamps to minimum safe timing (typically 2-3 degrees)
+
+Path 2: Standard advance
+  - Read base timing from timer
+  - Add advance offset
+  - Compare against 0x8000 ceiling
+  - If exceeds, saturate to 0x7FFF
+
+Path 3: Dwell time constraint
+  - Minimum dwell: 1.5ms (typical) = 0x100 timer units
+  - Maximum dwell: 5ms = 0x400 units
+  - If calculated timing violates dwell, adjust backward
+  - Precedence: Dwell safety > timing precision
+
+OUTPUT REGISTERS
+----------------
+0xFFFFA094 + offset:  Per-coil compare register (when to fire)
+0xDA6C base:          Coil pair output control structure
+
+PSEUDOCODE
+----------
+```
+function ign_output_calc_main(coil_channel):
+  rpm_scalar = read_word(0xFFFF9F9C)
+  rpm_scalar = rpm_scalar >> 4
+
+  // Get timing advance for this coil
+  if (coil_channel == LEADING) {
+    advance = read_signed_short(0xFFFFA458)
+  } else {
+    advance = read_signed_short(0xFFFFA448)
+  }
+
+  // Get current crank angle
+  current_angle = read_word(ATUII_TCNT1A_W)
+
+  // Calculate fire angle
+  fire_angle = current_angle + advance
+
+  // Check dwell time constraint
+  compare_reg_value = read_word(coil_struct + 0x10)
+  time_until_fire = fire_angle - current_angle
+
+  if (time_until_fire < MIN_DWELL) {
+    fire_angle = current_angle + MIN_DWELL
+  }
+
+  // Clamp to safe bounds
+  if (fire_angle > 0x8000) {
+    fire_angle = 0x7FFF
+  } else if (fire_angle < 0) {
+    fire_angle = 0
+  }
+
+  // Program hardware
+  write_synchronized(coil_struct + 0x04, fire_angle)
+
+  // Update driver status
+  dstr = read_word(ATUII_DSTR_W)
+  write_word(ATUII_DSTR_W, dstr | coil_enable_mask)
+```
+
+================================================================================
+4. TIMING LIMITS AND BOUNDARIES (SAFETY ARCHITECTURE)
+================================================================================
+
+ADVANCE LIMITS (Typical Renesis Values)
+---------------------------------------
+Maximum advance (WOT):     40-45 degrees BTDC (limit at 0x6D0A4)
+Minimum advance (idle):    5-10 degrees BTDC  (limit at 0x6D0A6+2)
+Safe mode default:         2 degrees BTDC
+Knock retard step size:    0.5-2.0 degrees per detection
+Knock recovery rate:       +0.1 degrees per ignition event
+Cold start boost:          +2-8 degrees during first 10 seconds
+
+KNOCK SENSITIVITY SCALING
+--------------------------
+Threshold constant:    0x1680000 (base sensitivity)
+Period multiplier:     0x1E0000 (frequency normalization)
+Margin scaling:        0xB40000 (converts energy difference to degrees)
+
+To INCREASE knock sensitivity (more aggressive):
+  - Decrease 0x1680000 value (e.g., 0x1000000)
+  - Decreases threshold, triggers retard sooner
+
+To DECREASE knock sensitivity (more conservative):
+  - Increase 0x1680000 value (e.g., 0x2000000)
+  - Increases threshold, requires stronger knock to trigger
+
+OVERFLOW PROTECTION
+--------------------
+All timing accumulations use saturated arithmetic:
+  - saturated_add_u16: max value = 0xFFFF (65535)
+  - saturated_sub_u16: min value = 0x0000 (0)
+  - Prevents integer wraparound
+  - Knock counter never resets mid-cycle (monotonic increase)
+
+FPU PRECISION
+--------------
+All floating-point calculations use SH-7055 FPU:
+  - Single precision (32-bit IEEE 754)
+  - Rounding toward nearest
+  - Timing values: -50.0 to +50.0 degrees
+  - Load scalar: 0.0 to 1.0 (manifold pressure normalized)
+  - Knock margin: 0.0 to 10.0 degrees
+
+================================================================================
+5. SYSTEM INTEGRATION POINTS
+================================================================================
+
+UPSTREAM DEPENDENCIES (must complete before ignition timing)
+------------------------------------------------------------
+1. main_fuel_control_output_task (0x11AA0)
+   - Computes AFR target from O2 sensor
+   - Provides fuel_diag_active flag affecting timing
+
+2. calc_knock_control_enable (0x11B04)
+   - Reads knock sensor signal
+   - Gates knock detection enable
+   - Provides knock_enable flag
+
+3. intake_pressure_sub_task_23EB8 (0x11B0A)
+   - Measures manifold absolute pressure (MAP)
+   - Provides load_scalar at 0xFFFFAA10
+   - Critical for RPM/load table interpolation
+
+4. priority_task_multi_sensor_init_307E8 (0x11B1E)
+   - Fuses all sensor inputs
+   - Validates data freshness
+   - Provides confidence levels
+
+5. engine_temp_range_check (0x11B28)
+   - Selects cold vs hot timing curves
+   - Affects cold_start_flag
+
+DOWNSTREAM CONSUMERS (depend on ignition timing outputs)
+---------------------------------------------------------
+1. ign_output_calc_main (0x884C)
+   - Reads advance from 0xFFFFA458/0xFFFFA448
+   - Converts to hardware timer compare values
+   - Drives coil charge/fire timing
+
+2. knock_detection_processing (0xF770)
+   - Reads knock counter at 0xFFFFA496
+   - Adjusts retard if threshold exceeded
+   - Feeds back to ignition_timing_calc_E7F8
+
+3. fuel_calc_task_dispatcher (0xB7D2)
+   - Reads timing advance to compute fuel injection timing offset
+   - Synchronizes injection pulse with ignition event
+
+4. RPM_LIMITER_MAIN (0xF192)
+   - Reads advance to determine if fuel cutoff needed at rev limit
+   - Disables injection if RPM exceeds 7500
+
+================================================================================
+6. TUNING GUIDE FOR REVERSE ENGINEERS
+================================================================================
+
+TARGET ROM TABLES FOR MODIFICATION
+-----------------------------------
+Base Timing:           0x6D096 (leading), 0x6DDD4 (trailing)
+Knock Correction:      0x6D0B0 (typical: decrease for less retard on knock)
+EGR Penalty:           0x6D0B6 (decrease to advance timing with EGR on)
+VVT Adjustment:        0x6D0BC (positive = advance with VVT, negative = retard)
+Knock Threshold:       0x1680000 (increase to reduce knock detection)
+Cold Start Boost:      0x6D0C6 (increase for faster cold start warmup)
+Knock Safety Margin:   0x6D0E8 (decrease for more aggressive tuning)
+
+SAFE MODIFICATIONS (Low Risk)
+-----------------------------
+1. Increase cold start boost (+2 deg):
+   Address: 0x6D0C6
+   Change:  Add +0.5 degrees to values
+   Effect:  Faster warm-up, better idle response
+   Risk:    Minimal (only during first 10 seconds)
+
+2. Reduce knock margin offset (-0.5 deg):
+   Address: 0x6D0E8
+   Change:  Decrease constant by 0.5
+   Effect:  Slightly more aggressive timing
+   Risk:    Low (still retards on actual knock)
+
+3. Increase EGR compensation:
+   Address: 0x6D0B6
+   Change:  Reduce magnitude (less negative retard)
+   Effect:  Better EGR performance, emissions improvement
+   Risk:    Medium (requires dyno testing)
+
+AGGRESSIVE MODIFICATIONS (High Risk)
+------------------------------------
+1. Increase peak advance:
+   Address: 0x6D0A4 (upper boundary)
+   Risk:    Can cause detonation if knock control fails
+   Mitigation: Lower knock threshold simultaneously
+
+2. Disable knock retard:
+   Method: Set 0xFFFFB5AA to 0 permanently
+   Risk:    Extreme detonation risk, engine damage
+   NOT RECOMMENDED
+
+3. Increase knock detection threshold:
+   Address: 0x1680000
+   Change:  Increase value (e.g., 0x2000000)
+   Effect:  Reduces knock detection sensitivity
+   Risk:    May miss actual knock events at high load
+
+VERIFICATION PROCEDURES
+-----------------------
+After any ROM modification:
+  1. Read back modified address to verify write
+  2. Monitor knock counter (0xFFFFA496) under load
+  3. Monitor timing outputs (0xFFFFA458, 0xFFFFA448)
+  4. Check for DTCs (diagnostic trouble codes)
+  5. Verify safe mode flag doesn't activate (0xFFFFA4A1)
+
+================================================================================
+7. COMPLETE FUNCTION CALL HIERARCHY
+================================================================================
+
+MAIN ENGINE CONTROL LOOP
+        |
+        +-- calc_base_ignition_timing_11A9C (Master dispatcher)
+                |
+                +-- main_fuel_control_output_task
+                +-- calc_knock_control_enable
+                +-- intake_pressure_sub_task_23EB8
+                +-- priority_task_multi_sensor_init_307E8
+                +-- engine_temp_range_check
+                        |
+                        +-- ignition_timing_calc_E7F8 (Main timing calc)
+                                |
+                                +-- table_2d_interpolate (0x9668)
+                                |       [Load × RPM base timing]
+                                +-- fpu_multiply_accumulate (0x2068)
+                                |       [Load scaling]
+                                +-- interp_linear_u16_to_float (0x24C0)
+                                |       [RPM interpolation]
+                                +-- fpu_add_float (0x20AC)
+                                |       [Accumulate adjustments]
+                                +-- fpu_sub_float (0x20C4)
+                                |       [Apply knock retard]
+                                +-- fpu_div_float (0x20DC)
+                                |       [Dwell division]
+                                +-- fpu_sqrt_float (0x23F4)
+                                        [Conservative cap]
+                        |
+                        +-- knock_detection_processing (0xF770)
+                                |
+                                +-- pulse_window_compute (0xFCD2)
+                                |       [Extract knock energy]
+                                +-- saturated_add_u16 (0x2460)
+                                |       [Increment counter]
+                                +-- div32_signed (0x3FE8)
+                                |       [Calculate margin]
+                                +-- fuel_injector_multiplexed_control
+                                        [Escalate to fuel cut]
+                        |
+                        +-- ignition_advance_limiter (0xE38C)
+                                |
+                                +-- saturated_add_u16 (0x2460)
+                                        [Increment counter]
+                        |
+                        +-- ign_output_calc_main (0x884C)
+                                |
+                                +-- write_to_memory_with_fpu_sync (0xAA74)
+                                +-- fpu_load_zero (0x2054)
+                                +-- fpu_nop_stub (0x2064)
+                                        [FPU context management]
+
+================================================================================
+END OF DOCUMENT
+================================================================================

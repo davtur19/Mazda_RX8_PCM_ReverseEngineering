@@ -1,0 +1,89 @@
+Function_Name,Function_Address,Function_Size,Category,Purpose,ROM_References,RAM_Reads,RAM_Writes,Execution_Frequency,Critical_Level
+calc_maf_sensor_flow,0x1332C,0x78,MAF Processing,MAF linearization + cold-start compensation,0x69F72;0x69F86;0x69F9A;0x69FAE;0x69FC2;0x69FD6;0x69FEA,0xFFFFA6B8,0xFFFFAE54;0xFFFFAAE0;0xFFFFA6DF,Per fuel cycle,CRITICAL
+maf_sensor_dispatcher_222C4,0x222C4,0x18,MAF Scheduler,Task scheduling dispatcher for MAF,--,--,--,Synchronized to eccentric shaft angle,LOW
+maf_sensor_correction_24234,0x24234,0x16C,MAF Correction,O2 feedback + manifold pressure compensation,0x6ACCE;0x6ACE4;0x6ACF8;0x6AD0C,0xFFFFB3FC;0xFFFFB33F;0xFFFFB340;0xFFFFB332;0xFFFFB314;0xFFFFAE54;0xFFFFB5CC;0xFFFFB5AA;0xFFFFA444;0xFFFFA445,0xFFFFB488;0xFFFFB494;0xFFFFB49C;0xFFFFB4A0;0xFFFFB4A4;0xFFFFB492;0xFFFFB48C;0xFFFFB480,Per fuel injection,CRITICAL
+maf_sensor_init_44CE0,0x44CE0,0x18,MAF Init,Cold-start MAF initialization,--,0xFFFFB5B8;0xFFFFC12C,0xFFFFCBAA;0xFFFFCBAC;0xFFFFCBB0,Engine startup,MEDIUM
+load_calc_maf_479BC,0x479BC,0x22,Load Calc,MAF-based load calculation dispatcher,--,0xFFFF8788;0xFFFF8780,--,Per control cycle,LOW
+sensor_main_process,0x9070,0x84,Sensor Multiplex,Master sensor processing multiplex (4 channels),--,0xFFFF9F98;0xFFFF9F9C;0xFFFF9F88;0xFFFFA0D8,0xFFFFA0FC;0xFFFFA100;0xFFFFA104,Per eccentric shaft sample,HIGH
+sensor_interp_calc,0x91FE,0x246,Sensor Interp,Complex sensor interpolation with CAM sync,--,0xFFFFA0FC;0xFFFFA0D8;0xFFFFA0D4;0xFFFFA100;0xFFFFA0C4,sensor_output_reg,Per active channel (state=2),HIGH
+sensor_channel_update,0x914C,0xB2,Sensor Update,Fast sensor delta update,--,0xFFFFA0FC;0xFFFFA0D8,sensor_output_reg,Per active channel (state=1),MEDIUM
+sensor_read_and_filter,0x8E60,0xBE,Sensor ADC,ADC reading with adaptive filtering,--,sensor_adc_config,sensor_state_reg,Per ADC conversion,MEDIUM
+air_fuel_ratio_calc,0xEBA8,0x47A,AFR Control,Dual-rotor AFR calculation with feedback,0x6ACE4;0x6ACF8;0x6996E,0xFFFFB5B8;0xFFFFB5CC;0xFFFFC12C;0xFFFFAA10;0xFFFFB5AA;0xFFFFB33F;0xFFFFB340;0xFFFFB5A4;0xFFFFD2A6;0xFFFFA428;0xFFFFA463;0xFFFFB5A4;0xFFFFCCB1;0xFFFFAA88;0xFFFFA450;0xFFFFA498;0xFFFFA460,0xFFFFA470;0xFFFFA474;0xFFFFA478;0xFFFFA47C;0xFFFFA484;0xFFFFA488;0xFFFFA490;0xFFFFA492;0xFFFFA494;0xFFFFA49A;0xFFFFA49B;0xFFFFA49C;0xFFFFA49D;0xFFFFA49E;0xFFFFA49F;0xFFFFA4A0;0xFFFFA463;0xFFFFA464;0xFFFFA465;0xFFFFA498,Per fuel injection,CRITICAL
+--,--,--,--,--,--,--,--,--,--
+ROM_Calibration_Table,0x69F72,~32B,MAF Linearization,MAF voltage-to-mass curve (point 1),--,--,--,--,CRITICAL
+ROM_Calibration_Table,0x69F86,~32B,MAF Linearization,Temperature compensation via coolant temp,--,--,--,--,CRITICAL
+ROM_Calibration_Table,0x69F9A,~32B,MAF Linearization,Barometric pressure correction,--,--,--,--,CRITICAL
+ROM_Calibration_Table,0x69FAE,~32B,MAF Linearization,Cold-start enrichment factor,--,--,--,--,CRITICAL
+ROM_Calibration_Table,0x69FC2,~32B,MAF Linearization,Cold-start alternate path,--,--,--,--,HIGH
+ROM_Calibration_Table,0x69FD6,~32B,MAF Linearization,Cold-start enhanced enrichment,--,--,--,--,HIGH
+ROM_Calibration_Table,0x69FEA,~32B,MAF Linearization,Final MAF post-processing,--,--,--,--,HIGH
+ROM_Calibration_Table,0x6ACCE,varies,MAF Correction,O2 feedback correction multiplier,--,--,--,--,HIGH
+ROM_Calibration_Table,0x6ACE4,varies,MAF Correction,Manifold pressure correction scale 1,--,--,--,--,CRITICAL
+ROM_Calibration_Table,0x6ACF8,varies,MAF Correction,Manifold pressure correction scale 2,--,--,--,--,CRITICAL
+ROM_Calibration_Table,0x6AD0C,varies,MAF Correction,Transient load enrichment table,--,--,--,--,HIGH
+ROM_Calibration_Table,0x6996E,varies,AFR Control,Rotor2 stoichiometric offset,--,--,--,--,HIGH
+ROM_Parameter,0xFFFFB5B8,4B,AFR Control,STOICHIOMETRIC TARGET (14.7:1 nominal),--,--,--,--,CRITICAL
+ROM_Parameter,0xFFFFC12C,4B,MAF Correction,Intake temperature calibration value,--,--,--,--,HIGH
+--,--,--,--,--,--,--,--,--,--
+RAM_Variable,0xFFFFA6B8,1B,Cold-Start Flag,Cold-start mode indicator,--,READ,--,--,HIGH
+RAM_Variable,0xFFFFAAE0,4B,MAF Output,Final MAF mass flow (g/s) to fuel calc,--,--,WRITE,--,CRITICAL
+RAM_Variable,0xFFFFAE54,4B,Intermediate,Base MAF output / Manifold pressure input,--,READ;WRITE,--,--,HIGH
+RAM_Variable,0xFFFFA6DF,1B,Status Flag,Processing complete flag,--,--,WRITE,--,LOW
+RAM_Variable,0xFFFFB3FC,4B,MAF Input,RAW MAF sensor signal,--,READ,--,--,CRITICAL
+RAM_Variable,0xFFFFB33F,1B,O2 Status,O2 feedback enable flag 1,--,READ,--,--,HIGH
+RAM_Variable,0xFFFFB340,1B,O2 Status,O2 feedback enable flag 2,--,READ,--,--,HIGH
+RAM_Variable,0xFFFFB332,4B,O2 Trim,O2 correction trim factor (multiplier),--,READ,--,--,HIGH
+RAM_Variable,0xFFFFB314,4B,Correction,Base MAF correction offset,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFB488,4B,Intermediate,Base MAF corrected output,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFB494,4B,MAF Output,FINAL MAF output to fuel calculator,--,--,WRITE,--,CRITICAL
+RAM_Variable,0xFFFFB49C,4B,Debug Info,Manifold pressure trim,--,--,WRITE,--,LOW
+RAM_Variable,0xFFFFB4A0,4B,Debug Info,Transient correction factor,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFB4A4,1B,Accel Flag,Acceleration flag (1=enriching),--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFB492,1B,Validity,Correction validity flag,--,--,WRITE,--,LOW
+RAM_Variable,0xFFFFB48C,4B,Reference,Base MAF uncorrected,--,--,WRITE,--,LOW
+RAM_Variable,0xFFFFB5CC,4B,Sensor Input,Manifold absolute pressure (MAP),--,READ,--,--,HIGH
+RAM_Variable,0xFFFFB5AA,1B,Safety,Manifold pressure safety threshold flag,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFA444,1B,Status,System health check 1,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFA445,1B,Status,System health check 2,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFB480,4B,Output,Fuel pressure calculation output,--,--,WRITE,--,LOW
+RAM_Variable,0xFFFFCBAA,1B,Init Flag,MAF initialization flag,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFB5B8,4B,Init Ref,MAF reference voltage (from 0xFFFFC12C),--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFCBAC,4B,Init Store,MAF initialization storage,--,--,WRITE,--,LOW
+RAM_Variable,0xFFFFC12C,4B,Init Calib,Initialization calibration value,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFCBB0,4B,Init Store,Initialization calibration storage,--,--,WRITE,--,LOW
+--,--,--,--,--,--,--,--,--,--
+RAM_Variable,0xFFFFA0D8,40B,Sensor State,Sensor channel control table (4x8B),--,READ,WRITE,--,HIGH
+RAM_Variable,0xFFFFA0FC,4B,Timing Ref,Sensor processing time reference,--,READ,WRITE,--,HIGH
+RAM_Variable,0xFFFFA100,4B,RPM Scale,RPM scaling divisor,--,READ,WRITE,--,HIGH
+RAM_Variable,0xFFFFA0C4,varies,Calibration,Sensor calibration offset table,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFA0C0,varies,Config,Sensor configuration table,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFA0D4,2B,Timing,RPM normalization parameter,--,READ,--,--,MEDIUM
+--,--,--,--,--,--,--,--,--,--
+RAM_Variable,0xFFFFA470,4B,AFR Output,AFR result lead rotor1,--,--,WRITE,--,HIGH
+RAM_Variable,0xFFFFA474,4B,AFR Output,AFR result trail rotor1,--,--,WRITE,--,HIGH
+RAM_Variable,0xFFFFA478,4B,AFR Output,AFR result multiplied (MAF-scaled),--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA47C,4B,AFR Output,AFR result lead rotor2,--,--,WRITE,--,HIGH
+RAM_Variable,0xFFFFA484,4B,AFR Output,AFR result trail rotor2 normalized,--,--,WRITE,--,HIGH
+RAM_Variable,0xFFFFA488,4B,AFR Output,AFR result normalized (combined),--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA490,2B,AFR Trim,AFR error integral accumulator,--,--,WRITE,--,HIGH
+RAM_Variable,0xFFFFA492,2B,AFR Trim,Alternative AFR error integral,--,READ;WRITE,--,--,MEDIUM
+RAM_Variable,0xFFFFA494,2B,AFR Output,Corrected AFR final output,--,READ;WRITE,--,--,CRITICAL
+RAM_Variable,0xFFFFA498,1B,Saturation,AFR saturation accumulator,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA450,1B,Status,Boundary check status,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA449,1B,Status,AFR calculation status,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFA463,1B,Enable,Closed-loop AFR enable flag,--,READ,WRITE,--,CRITICAL
+RAM_Variable,0xFFFFA464,1B,Status,Secondary AFR status,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA465,1B,Enable,AFR feedback enable flag,--,--,WRITE,--,HIGH
+RAM_Variable,0xFFFFA49A,1B,Boundary,Rotor comparison flag,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA49B,1B,Boundary,Rotor2 trail status flag,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA49C,1B,Boundary,Max AFR limit flag,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA49D,1B,Boundary,AFR low bound flag,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA49E,1B,Boundary,Multiplied AFR check flag,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA49F,1B,Boundary,Secondary boundary flag,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFA4A0,1B,Boundary,Tertiary boundary flag,--,--,WRITE,--,MEDIUM
+RAM_Variable,0xFFFFB5A4,1B,Rotor Mode,Rotor isolation flag (0=dual, 1=single),--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFD2A6,1B,Fuel Mode,Fuel cut-off mode flag,--,READ,--,--,HIGH
+RAM_Variable,0xFFFFAA10,4B,Load Param,Base fuel scaling parameter,--,READ,--,--,HIGH
+RAM_Variable,0xFFFFCCB1,1B,Status,System status flag for AFR,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFA428,1B,Mode,Operation mode selector,--,READ,--,--,MEDIUM
+RAM_Variable,0xFFFFAA88,1B,Threshold,Temperature threshold for AFR,--,READ,--,--,MEDIUM

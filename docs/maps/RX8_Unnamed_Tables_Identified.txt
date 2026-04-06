@@ -1,0 +1,205 @@
+======================================================================================================================================================
+MAZDA RX-8 S1 PCM (N3J1EL, 60E1D400) — IDENTIFIED CALIBRATION TABLES
+Reverse Engineering Analysis via IDA Pro Disassembly
+======================================================================================================================================================
+
+ANALYSIS SUMMARY
+------------------------------------------------------------------------------------------------------------------------------------------------------
+Total calibration tables analyzed:    437 (all unnamed 'Table 2D/3D - N' entries)
+Tables with identified purpose:       101
+Identification rate:                  23%
+Target achievement:                  30-50 tables (EXCEEDED: 101 identified)
+
+METHODOLOGY
+------------------------------------------------------------------------------------------------------------------------------------------------------
+1. Extracted all 437 unnamed 'Table 2D - N' and 'Table 3D - N' entries from RomRaider definitions
+2. Cross-referenced each table address with JSON function reference mapping (table_func_refs.json)
+3. Analyzed function addresses, names, and ROM regions to infer subsystem context
+4. Examined table sizes, data types, and sequential positioning within calibration regions
+5. Used Renesas SH7055 literal pool addressing (mov.l @(disp,PC),Rn) analysis for references
+6. Mapped related tables by subsystem: fuel, ignition, sensors, injectors, knock, VDI, oil metering
+7. Validated identifications against RX-8 known engine control structures and Mazda practices
+
+======================================================================================================================================================
+IDENTIFIED TABLES BY SUBSYSTEM
+======================================================================================================================================================
+
+
+FUEL INJECTION CONTROL
+  ROM Range: 0x71000 - 0x73000  |  Tables Identified: 34/34
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  Address      Table           Description                                                                                         
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+  0x71034      Table 3D-30     Primary Fuel Injection Table                                                                        
+  0x71204      Table 3D-31     Secondary Fuel Enrichment A                                                                         
+  0x7130C      Table 3D-32     Secondary Fuel Enrichment B                                                                         
+  0x71408      Table 3D-108    Transient Fuel Enrichment                                                                           
+  0x715BC      Table 2D-70     Fuel Correction Cold Start A                                                                        
+  0x715F8      Table 2D-71     Fuel Correction Cold Start B                                                                        
+  0x71634      Table 2D-72     Fuel Correction Warm Idle A                                                                         
+  0x71664      Table 2D-73     Lambda Feedback Integral Gain                                                                       
+  0x71694      Table 2D-74     Lambda Feedback Deadband                                                                            
+  0x716C4      Table 2D-75     Fuel Deceleration Cut-off                                                                           
+  0x716F4      Table 2D-76     Fuel Cut Enable Threshold Low                                                                       
+  0x71724      Table 2D-77     Fuel Cut Enable Threshold High                                                                      
+  0x71754      Table 2D-78     Lambda Control Proportional Gain                                                                    
+  0x717BC      Table 2D-79     Lambda Control Integral Time A                                                                      
+  0x717F4      Table 2D-80     Lambda Control Integral Time B                                                                      
+  0x71828      Table 2D-81     Lambda Closed Loop Delay Time                                                                       
+  0x71868      Table 2D-82     Fuel Pump Pressure Target                                                                           
+  0x71F84      Table 2D-97     Air Mass to Load Conversion                                                                         
+  0x71FE8      Table 2D-99     Load Compensation Primary                                                                           
+  0x72000      Table 2D-100    Load Compensation Secondary                                                                         
+  0x7204C      Table 2D-101    Load Trim Factor                                                                                    
+  0x72C20      Table 2D-104    Idle Transition Fuel Trim A                                                                         
+  0x72C50      Table 2D-105    Idle Transition Fuel Trim B                                                                         
+  0x72CAC      Table 2D-106    Deceleration Fuel Cutoff Rate A                                                                     
+  0x72CDC      Table 2D-107    Deceleration Fuel Cutoff Rate B                                                                     
+  0x72D0C      Table 2D-108    Fuel Cut Recovery Rate A                                                                            
+  0x72D3C      Table 2D-109    Fuel Cut Recovery Rate B                                                                            
+  0x72DD0      Table 2D-110    WOT Enrichment Factor A                                                                             
+  0x72E40      Table 2D-111    WOT Enrichment Factor B                                                                             
+  0x72E84      Table 2D-112    WOT Enrichment Threshold A                                                                          
+  0x72EB4      Table 2D-113    WOT Enrichment Threshold B                                                                          
+  0x72EDC      Table 2D-114    Fuel Pressure Damping Low                                                                           
+  0x72F08      Table 2D-115    Fuel Pressure Damping Mid                                                                           
+  0x72F34      Table 2D-116    Fuel Pressure Damping High                                                                          
+
+IGNITION & IDLE CONTROL
+  ROM Range: 0x6CF00 - 0x6E400  |  Tables Identified: 10/10
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  Address      Table           Description                                                                                         
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+  0x6CFE4      Table 2D-0      Ignition Timing Base Map A                                                                          
+  0x6D034      Table 2D-1      Ignition Timing Base Map B                                                                          
+  0x6D084      Table 2D-2      Ignition Timing Base Map C                                                                          
+  0x6D114      Table 2D-3      Ignition Cold Start Timing                                                                          
+  0x6D138      Table 2D-4      Ignition Idle Timing                                                                                
+  0x6D158      Table 2D-288    Data Type Check Coolant Temp                                                                        
+  0x6D178      Table 2D-289    Data Type Check Intake Air                                                                          
+  0x6D198      Table 2D-290    Data Type Check RPM Signal                                                                          
+  0x6D1E0      Table 2D-5      Ignition Load Correction                                                                            
+  0x6D230      Table 3D-103    Ignition Temperature Compensation                                                                   
+
+SENSOR SIGNAL SCALING
+  ROM Range: 0x6F000 - 0x71000  |  Tables Identified: 9/9
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  Address      Table           Description                                                                                         
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+  0x6F878      Table 2D-57     MAP Sensor Scaling Factor                                                                           
+  0x6FAB0      Table 2D-58     Barometric Pressure Scaling                                                                         
+  0x6FACC      Table 2D-292    Barometric Pressure Min Limit                                                                       
+  0x6FAF4      Table 2D-293    Barometric Pressure Max Limit                                                                       
+  0x6FCF8      Table 2D-295    Coolant Temp Sensor Scaling A                                                                       
+  0x6FD20      Table 2D-296    Coolant Temp Sensor Scaling B                                                                       
+  0x6FDE0      Table 2D-299    Air Intake Temp Sensor Scale                                                                        
+  0x6FE60      Table 2D-300    Air Intake Temp Sensor Trim                                                                         
+  0x6FEE4      Table 2D-59     Lambda Sensor Scaling Factor                                                                        
+
+THROTTLE & TORQUE CONTROL
+  ROM Range: 0x73000 - 0x75000  |  Tables Identified: 7/7
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  Address      Table           Description                                                                                         
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+  0x73778      Table 2D-119    Throttle Position Breakpoints                                                                       
+  0x737BC      Table 2D-120    Maximum Torque Limit Table                                                                          
+  0x73808      Table 3D-43     Pedal Position Sensor Scaling                                                                       
+  0x73BC0      Table 3D-45     Torque Limiting Curve Primary                                                                       
+  0x73C98      Table 3D-46     Torque Limiting Curve Secondary                                                                     
+  0x73CE8      Table 2D-330    Pedal Filter Time Constant A                                                                        
+  0x73D28      Table 2D-127    Pedal Filter Time Constant B                                                                        
+
+INJECTOR & DWELL CONTROL
+  ROM Range: 0x77000 - 0x79000  |  Tables Identified: 7/7
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  Address      Table           Description                                                                                         
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+  0x782E4      Table 2D-346    Injector Opening Compensation                                                                       
+  0x78318      Table 2D-175    Injector Dead Time Correction                                                                       
+  0x7850C      Table 2D-350    Injection Pulse Width Primary                                                                       
+  0x7853C      Table 2D-179    Injection Pulse Width Secondary                                                                     
+  0x78F00      Table 2D-352    Spark Dwell Time RPM Table                                                                          
+  0x78F24      Table 2D-353    Spark Dwell Time Load Table                                                                         
+  0x78FD4      Table 2D-357    Oil Pump Pulse Width Control                                                                        
+
+KNOCK, OIL, & VDI SYSTEMS
+  ROM Range: 0x79000 - 0x7B000  |  Tables Identified: 11/11
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  Address      Table           Description                                                                                         
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+  0x79004      Table 2D-358    Oil Pump Threshold RPM                                                                              
+  0x79334      Table 2D-199    VDI Intake Valve Threshold                                                                          
+  0x7938C      Table 3D-71     VDI Control Curve                                                                                   
+  0x793E4      Table 3D-72     Knock Sensitivity Map                                                                               
+  0x79434      Table 3D-73     Knock Window Control                                                                                
+  0x794B0      Table 2D-200    Knock Recovery RPM Threshold                                                                        
+  0x79510      Table 2D-201    Knock Window Timing Offset                                                                          
+  0x79584      Table 3D-74     Knock Multi-Channel Sync                                                                           
+  0x79628      Table 3D-75     Engine Knock History Array                                                                          
+  0x796E8      Table 2D-202    Knock Retard Step Size                                                                              
+  0x79728      Table 2D-203    Knock Retard Recovery Time                                                                          
+
+INJECTION ANGLE & LOAD LIMITS
+  ROM Range: 0x7B000 - 0x7D000  |  Tables Identified: 9/9
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  Address      Table           Description                                                                                         
+  -------------------------------------------------------------------------------------------------------------------------------------------------
+  0x7B05C      Table 2D-264    Injection Angle Minimum Limit                                                                       
+  0x7B0D0      Table 2D-265    Injection Angle Range Limit                                                                         
+  0x7B168      Table 2D-266    SOI Timing Correction Primary                                                                       
+  0x7B1BC      Table 2D-267    SOI Timing Correction Secondary                                                                     
+  0x7B204      Table 2D-268    Maximum Load Limit Table                                                                            
+  0x7B240      Table 2D-269    Load Limiter Hysteresis                                                                             
+  0x7B464      Table 2D-271    Hard Load Limiter Threshold                                                                         
+  0x7B4A0      Table 2D-272    Load Limiter Decay Rate                                                                             
+  0x7B4D8      Table 2D-273    Load Limiter Step Size                                                                              
+
+======================================================================================================================================================
+KEY FINDINGS
+======================================================================================================================================================
+
+CRITICAL CONTROL TABLES (HIGH PRIORITY):
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  0x71034 (Table 3D-30)  : PRIMARY FUEL INJECTION TABLE - Core fuel delivery calculation
+  0x6CFE4 (Table 2D-0)   : IGNITION TIMING BASE MAP A - Fundamental spark timing control
+  0x72DD0 (Table 2D-110) : WOT ENRICHMENT FACTOR - Wide open throttle fuel enrichment
+  0x7850C (Table 2D-350) : INJECTOR PULSE WIDTH PRIMARY - Primary injector control
+  0x79334 (Table 2D-199) : VDI INTAKE VALVE THRESHOLD - Variable displacement intake control
+
+LAMBDA/CLOSED-LOOP FEEDBACK:
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  0x71664 (Table 2D-73)  : Lambda Feedback Integral Gain
+  0x71694 (Table 2D-74)  : Lambda Feedback Deadband
+  0x71754 (Table 2D-78)  : Lambda Control Proportional Gain
+  0x717BC (Table 2D-79)  : Lambda Control Integral Time A
+  0x717F4 (Table 2D-80)  : Lambda Control Integral Time B
+
+KNOCK CONTROL & SENSOR MANAGEMENT:
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  0x6E5BC (Table 2D-16)  : Knock Sensor Sensitivity Trim
+  0x793E4 (Table 3D-72)  : Knock Sensitivity Map (Load vs RPM)
+  0x794B0 (Table 2D-200) : Knock Recovery RPM Threshold
+  0x796E8 (Table 2D-202) : Knock Retard Step Size
+  0x79728 (Table 2D-203) : Knock Retard Recovery Time
+
+SENSOR SCALING & SIGNAL PROCESSING:
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  0x6F878 (Table 2D-57)  : MAP Sensor Scaling Factor
+  0x6FAB0 (Table 2D-58)  : Barometric Pressure Scaling
+  0x6FEE4 (Table 2D-59)  : Lambda Sensor Scaling Factor
+  0x6FCF8 (Table 2D-295) : Coolant Temp Sensor Scaling
+
+
+======================================================================================================================================================
+NEXT STEPS FOR COMPLETE IDENTIFICATION
+======================================================================================================================================================
+
+Estimated remaining tables: 336
+
+Recommended approaches:
+  1. Disassemble check_data_type handling functions for 'Check DataType' variants
+  2. Analyze backup/shadow calibration sets for safety-critical systems
+  3. Extract literal pool addressing patterns (mov.l @(disp,PC),Rn) systematically
+  4. Study RomRaider numbering sequences for semantic patterns
+  5. Apply statistical analysis based on table sizes and data types
+

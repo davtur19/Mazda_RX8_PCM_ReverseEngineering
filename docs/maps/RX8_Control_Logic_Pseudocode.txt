@@ -1,0 +1,1857 @@
+================================================================================
+MAZDA RX-8 S1 PCM FIRMWARE (N3J1EL, 60E1D400) - ENGINE CONTROL LOGIC PSEUDOCODE
+================================================================================
+Renesas SH7055 Big-Endian CPU | FPU-Enabled | 16-bit Instructions
+
+This document describes the core engine subsystem control algorithms: how the
+firmware reads calibration tables and sensor inputs to compute outputs.
+
+NOTE: All RAM addresses in this document are derived from static ROM analysis.
+They require runtime verification via ECU RAM dump (SID 0x23) or CAN bus
+correlation.
+
+================================================================================
+A) FUEL INJECTION CONTROL
+================================================================================
+
+SUBSYSTEM OVERVIEW:
+  Primary function: Calculate per-rotor fuel pulse width for Wankel engine
+  Dual-channel architecture: Lead and trailing injectors, 2 rotors
+  Hysteresis gating: Separate enable/disable RPM boundaries
+  Fuel trim corrections applied via closed-loop O2 feedback
+
+---
+
+A.1) FUEL PULSE WIDTH CALCULATION - fuel_calc_entry (0x9528)
+----------------------------------------------------------------------
+
+Input Phase (copies current engine state to working RAM):
+  - Read RPM from hardware register @ 0xFFFF9EE4+8 (word, big-endian)
+  - Read MAP (manifold absolute pressure) @ 0xFFFF9EE4+A (word, big-endian)
+  - Store RPM to RAM @ 0xFFFFA112 (2 bytes)
+  - Store MAP to RAM @ 0xFFFFA114 (2 bytes)
+
+Purpose: Cache current sensor values for use by per-rotor loop
+Tuning Impact: Modify at this stage to inject global RPM/load scaling
+
+---
+
+A.2) PER-ROTOR FUEL CALCULATION - fuel_calc_per_rotor (0x9534)
+----------------------------------------------------------------------
+Main Algorithm: Iterates 2 times (rotor0, rotor1) to compute lead/trail pulse
+
+LOOP ITERATION: for rotor_index = 0 to 1
+
+  STEP 1: RPM BOUNDARY GATING (Multiple gates prevent table overrun)
+  ─────────────────────────────────────────────────────────────────
+    Load: RPM_boundary_1 @ ROM 0x6F9FE (max RPM for table lookup phase 1)
+    Load: RPM_boundary_2 @ ROM 0x6FA04 (max RPM for table lookup phase 2)
+    Load: index_max @ ROM 0x6CF44 (max table array index)
+
+    Decision tree:
+      IF RPM >= boundary_2:
+        Set rotor_ready_flag @ 0xFFFFA110 = 1  (rotor enabled for injection)
+        Use saturated index from previous cycle (no increment)
+      ELSE IF RPM >= boundary_1:
+        Check if index < index_max:
+          IF True:
+            Increment index @0xFFFFA112+rotor*2 by 1 (saturate at 0xFF)
+          IF False:
+            Keep index unchanged (saturated at max)
+      ELSE:
+        Clear rotor_ready_flag @ 0xFFFFA110 = 0 (rotor disabled)
+
+  STEP 2: FUEL CALCULATION VIA FPU MULTIPLY-ACCUMULATE
+  ─────────────────────────────────────────────────────
+    Load: base_constant FR4 = 0.9648 (loaded from literal pool @ 0x9648)
+    Load: scaling_factor @ ROM 0x6FA08+rotor*4 (per-rotor multiplier, float)
+    Load: accumulate_factor @ ROM 0x6FA10+rotor*4 (fmac second operand, float)
+
+    Computation (FPU pipeline):
+      1. float(RPM) via lds/float instruction
+      2. FR3 = scaling_factor * float(RPM)
+      3. FR2 = accumulate_factor + FR3 (via fmac: accumulate into base)
+      4. FR2_result = FR0 (0.9648) + FR3  [via fmac operand accumulate]
+      5. Store FR2 to pulsewidth @ 0xFFFFA108+rotor*4 (float32)
+
+    Output: rotor_pulsewidth (milliseconds * 1000, fixed-point internally)
+
+  STEP 3: ROTOR ENABLE FLAG (Hysteresis gate)
+  ────────────────────────────────────────────
+    IF RPM >= boundary_2:
+      Write: 0xFFFFA110 = 1 (enable lead injection)
+    ELSE IF RPM < boundary_1:
+      Write: 0xFFFFA110 = 0 (disable lead injection)
+    ELSE:
+      Keep prior state (hysteresis prevents chatter)
+
+END LOOP (repeat for rotor 1)
+
+Output Structure:
+  0xFFFFA108:     rotor0_pulsewidth_ms (float32)
+  0xFFFFA10C:     rotor1_pulsewidth_ms (float32)
+  0xFFFFA110:     rotor0_enable_flag (byte: 0=disabled, 1=enabled)
+  0xFFFFA111:     rotor1_enable_flag (byte)
+
+Tuning Knobs:
+  - ROM 0x6F9FE, 0x6FA04: Adjust RPM switchpoint hysteresis
+  - ROM 0x6FA08, 0x6FA10: Scale fuel by rotor characteristics (primary vs secondary)
+  - ROM 0x9648: Base constant (affects all fuel output; typically 1.0)
+
+---
+
+A.3) DUAL-CHANNEL FUEL COMPUTATION - dual_channel_fuel_computation (0x14BAC)
+----------------------------------------------------------------------
+Purpose: Combine per-rotor pulsewidths into dual-channel output (primary + secondary)
+
+Algorithm:
+  Load: condition_flag_1 @ 0xFFFFB5A4 (byte, system condition, NOT rotor enable)
+  Load: condition_flag_2 @ 0xFFFFB5AC (byte, system condition, NOT rotor enable)
+  Note: Rotor enable flags are at 0xFFFFA110/0xFFFFA111 (Section A.2)
+
+  Load: FR4 initial value @ 0xFFFFB618 (float from RAM, NOT from 0xFFFFA7BC)
+
+  IF condition_flag_1 == 1:
+    Load table @ loc_6A906+2 (primary rotor map)
+    Call fpu_multiply_accumulate: FR5 = result
+  ELSE IF condition_flag_2 == 1:
+    Load table @ loc_6A930 or loc_6A91C
+    Call fpu_multiply_accumulate: FR5 = result
+
+  Scaling Phase:
+    Load: scale_factor @ ROM 0x6FA4C (table offset +0x4C)
+    FR3 = FR5 * scale_factor  (via fmul)
+    FR4 = FR3 * sensor_correction_constant @ 0xFFFFA7BC
+    Call sensor_range_check_3ED0C(FR4)
+    Store result @ 0xFFFFA7B4 (dual-channel corrected output)
+
+Output: 0xFFFFA7B4 = combined fuel injector command (float32)
+
+Tuning Impact:
+  - Table selection: Primary vs secondary path affects lean/rich bias
+  - Scale factor: Global multiplier for fuel richness across all modes
+
+================================================================================
+B) IGNITION TIMING CONTROL
+================================================================================
+
+B.1) MAIN SPARK ADVANCE CALCULATOR - spark_advance_calc_main_1A0C8 (0x1A0C8)
+----------------------------------------------------------------------
+Core Algorithm: Three-stage knock-aware advance controller with sensor fusion
+
+STAGE 1: SAFETY ENVELOPE GATES
+─────────────────────────────
+  Load: boost_margin @ 0xFFFFAA44 (float, negated via fpu_neg_float)
+  Load: cold_start_boost_scalar @ 0xFFFFAA38 (float) → FR4
+  Load: min_safe_advance @ 0xFFFFAA24 (float) → FR12
+  Load: max_safe_advance @ 0xFFFFAA2C (float) → FR13
+  Load: sensor_status_1 @ 0xFFFFCCDB (byte: 0=OK, 1=fault) → r9
+  Load: sensor_status_2 @ 0xFFFFCCDC (byte) → r10
+  Load: advance_enable_flag @ 0xFFFFAA5E (byte: 0=inhibited, 1=enabled) → r14
+  Store: negated boost margin to stack (for later detonation cascade check)
+
+  Decision tree (CORRECTED — verified against disassembly 0x1A10A-0x1A120):
+    IF advance_enable_flag != 0:
+      Jump to BOOST ENVELOPE CHECK (loc_1A184)
+
+    // Falls through: enable_flag == 0
+    IF sensor_diagnostic_flag @ 0xFFFFAA7A == 1:
+      Jump to BOOST ENVELOPE CHECK (sensor error forces re-evaluation)
+
+    // Falls through: enable=0 AND sensor_diag!=1
+    INHIBIT PATH: Write 0 to 0xFFFFAA5C, jump to loc_1A19A
+
+  BOOST ENVELOPE CHECK (loc_1A184):
+    Load: Threshold_1 @ CLT_Sensor_Scaling+0xC4 = ROM 0x6FA30 (float)
+    Load: Threshold_2 @ CLT_Sensor_Scaling+0xC8 = ROM 0x6FA34 (float)
+
+    IF negated_boost > Threshold_1:
+      → pass through (boost within safe range)
+    ELSE IF negated_boost > Threshold_2:
+      → pass through
+    ELSE:
+      Store enable (r11=1) to 0xFFFFAA5C (advance permission granted)
+
+  SECONDARY ENVELOPE CHECK (loc_1A19A):
+    Load: Threshold_3 @ CLT_Sensor_Scaling+0xD0 = ROM 0x6FA3C (float)
+    Compare cold_start_boost FR4 vs Threshold_3
+
+    IF FR4 > Threshold_3 AND advance_enable AND NOT sensor_error:
+      → Continue to STAGE 2 with advance enabled
+    ELSE:
+      Check additional envelope (CLT_Sensor_Scaling+0xCC = ROM 0x6FA38)
+      Store enable/inhibit to 0xFFFFAA5D (secondary boost enable)
+
+  CRITICAL: 0xFFFFAA7A is then WRITTEN from 0xFFFFAA5E (copy of advance enable):
+    mov.b @r14, r3       ; r14 = 0xFFFFAA5E
+    mov.b r3, @r2        ; r2 = 0xFFFFAA7A
+    → 0xFFFFAA7A serves as "previous enable state" for knock path selection
+
+STAGE 2: ADVANCE COUNTER & KNOCK RECOVERY (CORRECTED)
+──────────────────────────────────
+  Load: advance_value @ 0xFFFFAA74 (word, current advance counter)
+  Load: reference_advance @ CLT_Sensor_Scaling+0xAE = ROM 0x6FA1A (word)
+
+  Counter logic (loc_1A22A):
+    IF advance_enable_flag @ 0xFFFFAA5E == 1:
+      IF advance_value == reference_advance:
+        Clear enable flag (write 0 to 0xFFFFAA5E) — target reached
+      ELSE:
+        Increment advance_value @ 0xFFFFAA74 by 1 (saturated_add_u16)
+        → Gradual recovery toward reference angle
+    ELSE (enable == 0):
+      Write 0 to 0xFFFFAA74 (reset advance counter)
+
+  Sensor validation & timing correction (loc_1A276):
+    Check sensor_status_1 (r9) and sensor_status_2 (r10)
+
+    PATH A — Both sensors have errors (r9==1 OR r10==1):
+      Call cold_start_enrichment @ 0x3EEB8 for 0xFFFF8090
+      Load correction from CLT_Sensor_Scaling+0xF0 = ROM 0x6FA5C
+      Call cold_start_enrichment for 0xFFFF8098
+      Call injection_pulse_calc @ 0x3EE58 for 0xFFFF80A0 with r5=0
+      → EXIT (no knock processing)
+
+    PATH B — No sensor errors AND advance enabled (loc_1A2B2):
+      Call timing_correction @ 0x3EE0A for 0xFFFF8090 → FR15
+      Load correction from CLT_Sensor_Scaling+0xF0
+      Call timing_correction for 0xFFFF8098 → FR14
+
+  KNOCK PATH SELECTION (based on 0xFFFFAA7A — copy of previous enable state):
+    IF 0xFFFFAA7A != 0 → MULTIPLICATIVE GAIN PATH (loc_1A344)
+    IF 0xFFFFAA7A == 0 → SQRT REDUCTION PATH (loc_1A2D0)
+
+  SQRT REDUCTION PATH (loc_1A2D0 — when previously disabled):
+    Load: advance_recovery_counter @ 0xFFFFAA76 (word)
+    Load: recovery_threshold @ CLT_Sensor_Scaling+0xB0 = ROM 0x6FA1C (word)
+    IF counter < threshold: → skip to GAIN PATH (loc_1A344)
+    ELSE:
+      FR3 = FR15 (sensor1 timing)
+      Load: knock_offset @ CLT_Sensor_Scaling+0xE8 = ROM 0x6FA54 (float)
+      Load: knock_base @ CLT_Sensor_Scaling+0xE4 = ROM 0x6FA50 (float)
+      FR15 = FR3 + knock_offset
+      Call fpu_sqrt_float(FR15, knock_base) → conservative advance reduction
+      Write result to 0xFFFF8090 via cold_start_enrichment
+      Repeat for FR14 → 0xFFFF8098
+
+  MULTIPLICATIVE GAIN PATH (loc_1A344 — when previously enabled):
+    IF FR15 > FR12 (sensor1 > min_safe_advance):
+      Load: gain_1 @ CLT_Sensor_Scaling+0xE0 = ROM 0x6FA4C = 0.005 [CONFIRMED]
+      FR15 = FR15 - gain_1
+      FR_result = fpu_mul_float(FR15, FR12)
+      Load: gain_2 @ CLT_Sensor_Scaling+0xDC = ROM 0x6FA48 = 9.626 [CONFIRMED]
+      FR_result2 = fpu_mul_float(FR_result, gain_2)
+      Write to 0xFFFF8090 via cold_start_enrichment
+    IF FR14 > FR13 (sensor2 > max_safe_advance):
+      Same cascade reduction for sensor 2 → 0xFFFF8098
+
+STAGE 3: DETONATION CASCADE & SECONDARY COUNTERS (loc_1A38E-loc_1A3FE)
+──────────────────────────────────────
+  Compute residuals:
+    FR5 = FR15 - FR12 (sensor1 minus min_safe)
+    FR4 = FR14 - FR13 (sensor2 minus max_safe)
+
+  IF r4 flag == 1 (both gain paths executed):
+    Load: detonation_threshold @ CLT_Sensor_Scaling+0xF4 = ROM 0x6FA60 (float)
+    IF FR5 > threshold AND FR4 > threshold:
+      Load: cascade_limit @ CLT_Sensor_Scaling+0xF8 = ROM 0x6FA64 (float)
+      Load: negated_boost_margin from stack
+      IF negated_boost > cascade_limit:
+        Load: secondary_counter @ 0xFFFFAA78 (word)
+        Load: secondary_threshold @ CLT_Sensor_Scaling+0xB2 = ROM 0x6FA1E (word)
+        IF counter >= threshold:
+          Call injection_pulse_calc @ 0x3EE58 for 0xFFFF80A0 with r5=1
+          → Signal SEVERE KNOCK to downstream systems
+
+  COUNTER UPDATE (loc_1A3CE):
+    Load: advance_recovery_counter @ 0xFFFFAA76 (word)
+    IF advance_enable_flag == 0:
+      Increment 0xFFFFAA76 by 1 (saturated_add_u16)
+    ELSE:
+      Reset 0xFFFFAA76 to 0
+
+    Load: secondary_advance_trim @ 0xFFFFAA78 (word)
+    Load: detonation_cascade_limit @ CLT_Sensor_Scaling+0xF8 = ROM 0x6FA64 (float)
+    Load: negated_boost_margin from stack
+    IF negated_boost > cascade_limit:
+      Reset 0xFFFFAA78 to 0
+    ELSE:
+      Increment 0xFFFFAA78 by 1 (saturated_add_u16)
+
+OUTPUT STAGE:
+──────────────
+  0xFFFFAA5C:     advance_permission (written in envelope check)
+  0xFFFFAA5D:     secondary_boost_enable (for envelope)
+  0xFFFFAA5E:     advance_enable_flag (0=inhibit, 1=allow)
+  0xFFFFAA74:     advance_counter_word (recovery toward reference)
+  0xFFFFAA76:     advance_recovery_counter (incremented when disabled)
+  0xFFFFAA78:     secondary_advance_trim (detonation cascade penalty)
+  0xFFFFAA7A:     previous_enable_state (COPY of 0xFFFFAA5E, used for path select)
+
+Tuning Parameters (verified ROM addresses via CLT_Sensor_Scaling offsets):
+  ROM 0x6FA1A (+0xAE):  Reference advance angle (word, target for recovery)
+  ROM 0x6FA1C (+0xB0):  Recovery threshold (word, cycles before sqrt reduction)
+  ROM 0x6FA1E (+0xB2):  Secondary knock threshold (word, severe cascade gate)
+  ROM 0x6FA30 (+0xC4):  Boost envelope threshold 1 (float)
+  ROM 0x6FA34 (+0xC8):  Boost envelope threshold 2 (float)
+  ROM 0x6FA38 (+0xCC):  Cold start envelope lower (float)
+  ROM 0x6FA3C (+0xD0):  Cold start envelope upper (float)
+  ROM 0x6FA48 (+0xDC):  Cascade gain 2 = 9.626 [CONFIRMED from ROM]
+  ROM 0x6FA4C (+0xE0):  Cascade gain 1 = 0.005 [CONFIRMED from ROM]
+  ROM 0x6FA50 (+0xE4):  Knock base constant (float, sqrt input)
+  ROM 0x6FA54 (+0xE8):  Knock offset (float, additive before sqrt)
+  ROM 0x6FA5C (+0xF0):  Timing correction offset (float)
+  ROM 0x6FA60 (+0xF4):  Detonation threshold (float, cascade gate)
+  ROM 0x6FA64 (+0xF8):  Detonation cascade limit (float)
+
+================================================================================
+C) LAMBDA / CLOSED-LOOP FUEL CONTROL
+================================================================================
+
+C.1) CLOSED-LOOP FUELLING THRESHOLD CHECK & MODE SELECT
+----------------------------------------------------------------------
+Parameters (ROM Tables Table_2D___226_):
+  Closed_Loop_Fuelling_Threshold_Temperature_A  @ 0x71BD8
+  Closed_Loop_Fuelling_Threshold_Temperature_B  @ 0x71BE0
+  Closed_Loop_Fuelling_Threshold_Temperature_C  @ 0x71C9C
+  Closed_Loop_Fuelling_Threshold_Engine_Speed   @ 0x71BF8
+  Closed_Loop_Fuelling_Threshold_Engine_Load_A  @ 0x71DD4
+  Closed_Loop_Fuelling_Threshold_Engine_Load_B  @ 0x71E30
+  Closed_Loop_Fuelling_Threshold_Engine_Load_C  @ 0x71E8C
+  Closed_Loop_Fuelling_Threshold_Throttle_Position  @ 0x71F28
+
+Mode Transition Logic:
+
+  OPEN-LOOP MODE (active at engine start, cold operation):
+    Default at cold start, transitions to CLOSED-LOOP when:
+
+    IF (coolant_temp >= Temperature_A_threshold AND
+        engine_speed < Engine_Speed_threshold AND
+        engine_load >= Load_A_threshold AND
+        throttle_position <= Throttle_threshold):
+
+      Transition to CLOSED-LOOP mode
+      Set mode_flag @ 0xFFFFA324 = 1
+
+  CLOSED-LOOP MODE (active for emissions control):
+    Remains active while ALL conditions met:
+    - Temperature within safe band (temp_A < ECT < temp_C)
+    - RPM below max limit (RPM < 6000, prevents high-RPM richening)
+    - Load within calibrated bounds
+    - Throttle not wide-open (WOT override)
+
+    Exit conditions (revert to OPEN-LOOP):
+    IF temperature < Temperature_B (engine cooling):
+      Exit closed-loop, return to OPEN-LOOP enrichment
+
+    IF engine_speed > Engine_Speed_threshold:
+      Exit closed-loop (WOT condition)
+
+    IF engine_load > Load_threshold:
+      Transition to WOT fuel enrichment (open-loop)
+
+---
+
+C.2) O2 FEEDBACK CONTROLLER - lambda_control_closed_loop (0xC508)
+----------------------------------------------------------------------
+Core Algorithm: Per-rotor proportional-integral fuel trim using dual O2 sensors
+
+ENTRY GATE (CORRECTED — verified against disassembly):
+──────────────────────────
+  Load: disable_flag @ 0xFFFFA38C (byte)
+  IF disable_flag != 0:
+    → EXIT immediately (O2 feedback disabled, e.g. during WOT/cranking)
+
+ROTOR SELECTION PHASE:
+─────────────────────────
+  Load: rotor_index @ 0xFFFFA383 (which rotor pair: 0, 1, 2...)
+  Load: rotor_status @ 0xFFFFA384 (0xFF = invalid/disabled)
+
+  Input modulo: IF r4 >= 12: r4 -= 12 (rotor wrap-around)
+
+  Dispatch logic:
+    FOR each rotor pair (0 to 1):
+      Match against ROM dispatch tables @ loc_DBA4+2 and loc_DBA8
+      IF match in table 1: store index to 0xFFFFA383, set dispatch=1
+      IF match in table 2: set dispatch=2
+
+    IF dispatch == 1:
+      Call atu_schedule_event_from_adc  (read next O2 sensor)
+      Check: IF 0xFFFFA384 != 0xFF:
+        Continue to PID calculation (falls through to loc_C656)
+      ELSE:
+        EXIT (sensor dead)
+
+    IF dispatch == 2:
+      Call loc_CAAC (alternative O2 processing)
+      Store result to 0xFFFFA385
+      EXIT
+
+PID CONTROL STAGE (CORRECTED — verified against disassembly loc_C656):
+──────────────────
+  Error calculation (CORRECTED):
+    Load: value_A @ 0xFFFFA378 (word — NOT the fuel cut duty; dual-purpose register)
+    Load: value_B @ 0xFFFFA326 (word — target/reference value)
+    Load: scaling_constant from ROM literal pool @ 0xC8B4 (float)
+    raw_error = (value_A - value_B) as signed integer
+    scaled_error = float(raw_error) * scaling_constant
+    IF scaled_error < 0: clamp to 0 (one-sided correction)
+
+  Proportional term (P):
+    Load: P_gain TABLE DESCRIPTOR @ ROM 0x6B8D4  [CONFIRMED via IDA]
+      (Not a scalar float — it's a 20-byte table descriptor structure:
+       axis_count=58, interp_type=4, axis_ptr=0x7A230, data_ptr=0x7A318,
+       scale=1.0, offset=0.0. fpu_multiply_accumulate performs axis search
+       + interpolation to return a proportional gain value.)
+    proportional_trim = fpu_multiply_accumulate(scaled_error, P_gain_table)
+    Store to 0xFFFFA370 (proportional output)
+
+  Proportional threshold gating (CORRECTED — multiplier is ×32, NOT ×20):
+    Load: threshold_index @ 0xFFFFA381 (byte, indexed by rotor pair)
+    threshold = threshold_index << 5  (shll2 + shll2 + shll = ×32)
+    float_threshold = float(threshold)
+    IF (proportional_trim - float_threshold) < 0:
+      Zero out proportional term (deadband hysteresis)
+
+  Integral term (I):
+    Load: prior_integral @ 0xFFFFA35C (accumulated error from prior cycles)
+    Load: I_gain_1 TABLE DESCRIPTOR @ ROM 0x6B900  [CONFIRMED via IDA]
+      (Single-entry table descriptor: data at 0x7A400 = 8.0, integral gain constant)
+    Load: I_gain_2 TABLE DESCRIPTOR @ ROM 0x6B90C  [CONFIRMED via IDA]
+      (Single-entry table descriptor: data at 0x7A404 = 500.0)
+
+    Integral accumulation:
+      integral_new = prior_integral + (I_gain * AFR_error)
+
+    Integral clamping (prevent wind-up):
+      Load: integral_max @ ROM 0x6B8F4 (upper bound, e.g., +10%)
+      Load: integral_min @ ROM 0x6B8F0 (lower bound, e.g., -10%)
+
+      IF integral_new > integral_max:
+        integral_new = integral_max
+      IF integral_new < integral_min:
+        integral_new = integral_min
+
+      Store to 0xFFFFA364 (integral output)
+
+  Fuel trim composite (P + I):
+    Load: trim_bounds @ 0xFFFFC0CC, 0xFFFFC0D0 (absolute limits)
+    composite_trim = proportional_trim + integral_trim
+
+    Clamp to safety envelope:
+      IF composite_trim > max_trim:
+        composite_trim = max_trim
+      IF composite_trim < -max_trim:
+        composite_trim = -max_trim
+
+    Store to 0xFFFFA350 (per-rotor fuel trim)
+
+CLOSED-LOOP STATUS FLAG (CORRECTED):
+────────────────────────
+  Load: integral_output @ 0xFFFFA364 (float)
+  Load: proportional_error @ 0xFFFFA330 (float)
+
+  Decision (NOT a simple deadband — comparison is integral vs proportional):
+    IF integral_output > proportional_error:
+      Write: 0xFFFFA324 = 0 (CLOSED-LOOP CONVERGED — integral dominates)
+    ELSE:
+      Write: 0xFFFFA324 = 1 (CLOSED-LOOP ACTIVE — proportional correction ongoing)
+
+Outputs:
+  0xFFFFA364:     Integral accumulator (for next cycle)
+  0xFFFFA350:     Per-rotor fuel trim (float, indexed by rotor @ 0xFFFFA350+rotor*4)
+  0xFFFFA344:     Clamped proportional correction (float)
+  0xFFFFA35C:     Intermediate integral (float)
+  0xFFFFA360:     Final integral result (float)
+  0xFFFFA368:     Per-rotor integrated trim (float, indexed by rotor*4)
+  0xFFFFA324:     Closed-loop active flag (0=converged, 1=correcting)
+
+Tuning Knobs:
+  ROM 0x6B8D4:    P-gain TABLE DESCRIPTOR (58-entry lookup, axis 0x7A230, data 0x7A318)
+  ROM 0x6B900:    I-gain TABLE DESCRIPTOR (single-entry, value = 8.0 at 0x7A400)
+  ROM 0x6B90C:    I-gain 2 TABLE DESCRIPTOR (single-entry, value = 500.0 at 0x7A404)
+  ROM 0x7A1D0 (Table_2D___226_+0x80):  Integral lower clamp = 64.0
+  ROM 0x7A1D4 (Table_2D___226_+0x84):  Integral upper clamp = 255.0
+  0xFFFFC0CC:     Safety clamp gain (float, proportional scaling limit)
+  0xFFFFC0D0:     Safety clamp secondary (float, integral rate limit)
+  0xFFFFC0D4:     Additional scaling constant (float)
+  0xFFFFA381:     Threshold index (byte, ×32 for deadband size)
+  0xFFFFA334:     Target AFR setpoint (per-rotor, float @ +rotor*4)
+  0xFFFFA38C:     O2 feedback disable gate (byte: 0=enabled, nonzero=disabled)
+
+================================================================================
+D) FUEL CUT CONTROL
+================================================================================
+
+⚠ GHIDRA CROSS-VALIDATION NOTE (2026-04-05):
+  Fuel cut is MUCH more complex than documented here. Ghidra reveals 30+ fuel
+  cut functions with a CENTRAL ARBITRATOR (arbitrateFuelCut at 0xE2D8) that OR's
+  together 13+ independent fuel cut request flags into a 2-BIT PER-ROTOR output
+  (bit 0 = rotor A cut, bit 1 = rotor B cut). Fuel cut sources include:
+  rev limiter, throttle lift-off, DSC (traction control per-rotor), load-based,
+  vehicle speed + braking, throttle plate position, and condition-based triggers.
+  Our documentation below covers only the rev limiter and decel fuel cut paths.
+  See RX8_Ghidra_vs_IDA_CrossValidation.txt Section 4.1 for full list.
+
+D.1) RPM LIMITER & FUEL CUTOFF - rpm_limiter_fuel_cutoff (0xC59E)
+----------------------------------------------------------------------
+Purpose: Prevent engine overspeed by cutting fuel injectors when RPM exceeds limit
+
+Algorithm: Progressive fuel duty cycle modulation
+
+INPUT PHASE (CORRECTED — verified against disassembly 0xC59E):
+──────────────────────────
+  Load: RPM_float @ 0xFFFF9F80 (float, system RPM as float) → FR15
+  Load: RPM_integer @ 0xFFFF9EF8 (word, raw RPM from hardware)
+  Store: RPM_integer → 0xFFFFA37A (cache for downstream use)
+
+PROGRESSIVE REGION CHECK:
+──────────────────────────
+  Load: threshold_1 @ Table_2D___226_+0x88 = ROM 0x7A1D8 (float)
+  Load: threshold_2 @ Table_2D___226_+0x8C = ROM 0x7A1DC (float)
+
+  IF RPM_float > threshold_1:
+    → RPM above upper bound, skip progressive calc (go to duty decision)
+  ELSE IF RPM_float < threshold_2:
+    → RPM below lower bound, skip progressive calc
+  ELSE: (RPM within progressive region)
+    Continue to DUTY CYCLE CALCULATION
+
+DUTY CYCLE CALCULATION:
+───────────────────────
+  Load: control_reference @ Table_2D___226_+0x90 = ROM 0x7A1DE (float)
+  Load: prior_float_result @ 0xFFFFA374 (float, from previous cycle)
+  Load: RPM_error_word @ 0xFFFFA37A (word)
+
+  Convert RPM_error to float:
+    float(RPM_error) via lds fpul + float instruction
+
+  Call fpu_abs_float(RPM_error):
+    Magnitude = |RPM_error| as float
+    Store to 0xFFFFA374 (float result)
+
+  Convert back to integer (fuel PWM duty):
+    ftrc magnitude → fpul
+    sts fpul → register
+    Store to 0xFFFFA378 (integer duty cycle)
+
+FINAL DUTY DECISION (loc_C5E8):
+───────────────────────────────
+  Load: cut_enable_threshold @ Table_2D___226_+0x48 = ROM 0x7A198 (float)
+  IF RPM_float > cut_enable_threshold:
+    → Go to secondary check (loc_C640)
+  ELSE:
+    Write: 0xFFFFA386 = 1 (fuel cut ACTIVE)
+    EXIT
+
+  Secondary check (loc_C640):
+    Load: cut_disable_threshold @ Table_2D___226_+0x44 = ROM 0x7A194 = 10000.0 RPM
+    IF RPM_float < cut_disable_threshold:
+      → EXIT (maintain current state)
+    ELSE:
+      Write: 0xFFFFA386 = 0 (fuel cut CLEARED, RPM back in safe zone)
+
+Output:
+  0xFFFFA374:     RPM_error as float32
+  0xFFFFA378:     Fuel cut duty (integer)
+  0xFFFFA37A:     RPM error word (from hardware)
+  0xFFFFA386:     Final fuel cut command (0=off, 1=cut active)
+
+Tuning Parameters (5 thresholds, not 3):
+  ROM 0x7A194 (Table_2D___226_+0x44): Fuel cut disable RPM = 10000.0 [CONFIRMED]
+  ROM 0x7A198 (Table_2D___226_+0x48): Fuel cut enable RPM = 10000.0 [CONFIRMED]
+  ROM 0x7A1D8 (Table_2D___226_+0x88): Progressive enable threshold = 200.0 RPM error
+  ROM 0x7A1DC (Table_2D___226_+0x8C): Progressive maintain threshold = 2000.0 RPM error
+  ROM 0x7A1E0 (Table_2D___226_+0x90): Fuel cut control gain = 0.004
+  ROM 0x7A1DE (Table_2D___226_+0x90): Control reference (float, duty scaling)
+
+================================================================================
+E) SSV / SECONDARY INTAKE VALVE CONTROL
+================================================================================
+
+E.1) SECONDARY CHAMBER CONTROLLER - secondary_chamber_controller (0x1671A)
+----------------------------------------------------------------------
+Purpose: Modulate secondary intake valve opening for torque curve optimization
+
+Algorithm: Hysteresis-gated solenoid control with load and temperature compensation
+
+Hardware Interface:
+  Switchpoint table @ 0x7863C (ROM data, contains enable/disable load thresholds)
+  Control flags: 0xFFFFA8B8 (activation status)
+  Output valve command: 0xFFFFA8C0 (control signal)
+
+INPUT PHASE (CORRECTED — verified against disassembly 0x1671A):
+──────────────────────────────────
+  Load: crank_start_flag @ 0xFFFFA428 (byte) → saved to stack for later use
+  Load: target_load @ 0xFFFFAA14 (float) → FR14 (primary input for MAC calculations)
+  Load: system_load @ 0xFFFFB5B8 (float) → FR4 (comparison threshold)
+  Load: chamber_temp @ 0xFFFFAE54 (float) → FR13
+  r14 = 0xFFFFA8C0 (output register pointer)
+
+ACTIVATION STATUS CHECK (NOT crank flag — this was wrong):
+─────────────────────────────────────────────────────────
+  Load: activation_status @ 0xFFFFA8B8 (byte)
+
+  IF activation_status == 1:
+    Write: 0xFFFFA8B4 = 0.0 (disable secondary valves)
+    Write: 0xFFFFA8BC = 0.0 (zero primary output)
+    Write: 0xFFFFA8C0 = 0.0 (zero final output)
+    Write: 0xFFFFA8CD = 0 (clear enable flag)
+    Write: 0xFFFFA8CE = 0 (clear permission flag)
+    RETURN (skip rest of calculation)
+
+SWITCHPOINT THRESHOLD CHECK (loc_16768):
+─────────────────────────────
+  Load: switchpoint_offset @ Table_2D___40_+0x10 = ROM 0x7864C (float)
+  Load: actual_load @ 0xFFFFA7BC (float, manifold pressure)
+
+  Computation: FR5 = actual_load + switchpoint_offset
+  Comparison: IF FR5 > system_load (FR4 from 0xFFFFB5B8):
+    → condition not met, keep prior state
+  ELSE:
+    Set: 0xFFFFA8CD = 1 (secondary enable flag)
+    Set: 0xFFFFA8CE = 1 (secondary valve permission)
+
+VVT-DEPENDENT PRIMARY CALCULATION (loc_1677E):
+───────────────────────────────
+  Load: VVT_enabled @ 0xFFFFCE6E (byte)
+
+  IF VVT_enabled == 1:
+    Use advanced control table @ loc_69E46+2
+    Call fpu_multiply_accumulate(target_load FR14)
+    Store result to 0xFFFFA8C8 (primary chamber command)
+  ELSE:
+    Write: 0xFFFFA8C8 = 0.0 (zero command when VVT inactive)
+
+CHAMBER GAIN TABLE SELECTION (loc_1679C):
+──────────────────────────────
+  Load: gain_select_flag @ 0xFFFFBFD4 (byte)
+
+  IF gain_select_flag == 1:
+    Use table @ loc_69E70 with gain @ Table_2D___40_+0x18 = ROM 0x78654
+  ELSE:
+    Use table @ loc_69E5C with gain @ Table_2D___40_+0x14 = ROM 0x78650
+
+CRANK-DEPENDENT MODE SPLIT (loc_167B4):
+──────────────────────────────
+  Load: crank_start_flag (from stack, saved earlier from 0xFFFFA428)
+
+  MODE A — Normal running (crank_flag == 0):
+    Call fpu_multiply_accumulate(target_load FR14, selected_table)
+    primary_cmd = result
+    secondary_contribution = primary_cmd + 0xFFFFA8C8 (VVT result)
+    Store to 0xFFFFA8BC (primary chamber output)
+    Clear 0xFFFFA8CD = 0
+
+  MODE B — Starting/cranking (crank_flag != 0):
+    Load: secondary_enable_flag @ 0xFFFFA8CD
+    IF secondary_enable_flag == 1:
+      Load gain from selected table
+      current = 0xFFFFA8BC (primary output)
+      new_value = current - gain
+      result = fpu_mul_float(new_value, 0.0)  [clamp to zero]
+      IF result > 0: store to 0xFFFFA8BC
+      ELSE: clear 0xFFFFA8CD = 0
+
+SECONDARY CHAMBER ACTIVATION (loc_1683C — Normal running path):
+──────────────────────────────
+  Load: secondary_enable_flag @ 0xFFFFA8CD (from hysteresis gate)
+    Load: secondary_threshold @ ROM 0x7863C+0x1C (opening RPM)
+
+    Ramp-up control (soft opening):
+      Load: current_secondary_cmd @ 0xFFFFA8C4
+      Load: gain_factor @ loc_69E84
+
+      IF actual_load > secondary_threshold:
+        new_cmd = current_cmd + (gain_factor * delta_load)
+        Clamp result to [0, max_solenoid_duty]
+        Store to 0xFFFFA8C4 (secondary solenoid output)
+
+  ELSE (secondary_enable_flag == 0):
+    Ramp-down control (soft closing):
+      Load: current_secondary_cmd @ 0xFFFFA8C4
+      Load: decay_rate @ ROM 0x7863C+0x24 (closing speed)
+
+      new_cmd = current_cmd - (decay_rate * time_step)
+      IF new_cmd < 0:
+        new_cmd = 0
+      Store to 0xFFFFA8C4 (ramp down secondary)
+
+FINAL VALVE OUTPUT (loc_1689A):
+────────────────────
+  Load: secondary_cmd @ 0xFFFFA8C0 (r14, accumulated valve command)
+  Load: primary_cmd @ 0xFFFFA8BC (r12, primary chamber output)
+
+  Blend via fpu_mul_float:
+    final_valve_cmd = fpu_mul_float(secondary_cmd, primary_cmd)
+    Store to 0xFFFFA8B4 (final solenoid duty cycle output)
+
+Outputs:
+  0xFFFFA8C0:     Final SSV solenoid command (float32, 0.0-1.0)
+  0xFFFFA8BC:     Primary chamber output
+  0xFFFFA8C4:     Secondary chamber output
+  0xFFFFA8CD:     Secondary enable flag
+
+Tuning Parameters (ROM Table_2D___40_):
+  ROM 0x7863C+0x10:   Switchpoint load offset (when to open valves)
+  ROM 0x7863C+0x14:   Primary chamber gain 1
+  ROM 0x7863C+0x18:   Primary chamber gain 2
+  ROM 0x7863C+0x1C:   Secondary chamber threshold
+  ROM 0x7863C+0x20:   Secondary chamber load limit
+  ROM 0x7863C+0x24:   Valve closing decay rate
+  loc_69E46+2:        VVT-enabled control table
+  loc_69E5C:          Secondary control standard table
+  loc_69E70:          Secondary chamber gain alternative
+  loc_69E84:          Solenoid ramp rate
+  loc_69E98:          Primary chamber standard command
+
+E.2) SECONDARY CHAMBER READY CHECK - secondary_chamber_ready_check (0x168BE)
+----------------------------------------------------------------------
+Purpose: Verify secondary valve system health before allowing solenoid activation
+
+Preconditions:
+  Load: fault_diagnostic_1 @ 0xFFFFBDD5 (solenoid coil diagnosis)
+  Load: secondary_enable_flag @ 0xFFFFA8CF (override control)
+
+  IF fault_diagnostic_1 == 0 OR secondary_enable_flag == 1:
+    Clear ready flag @ 0xFFFFA8CC = 0
+    RETURN (not ready)
+
+Multi-stage health check:
+  Load: engine_speed @ 0xFFFFA424 (RPM word)
+
+  IF engine_speed >= 0x80 (128 RPM minimum running threshold):
+    Check fault flags:
+      1. Fuel pump pressure fault @ 0xFFFFBC20
+      2. Load sensor fault @ 0xFFFFA7C6
+      3. Knock sensor fault 1 @ 0xFFFFC656
+      4. Knock sensor fault 2 @ 0xFFFFC64B
+      5. Knock sensor fault 3 @ 0xFFFFC647
+      6. O2 sensor fault @ 0xFFFFC68E
+
+    IF all faults clear:
+      Write: 0xFFFFA8CC = 1 (READY - secondary chamber available)
+    ELSE:
+      Write: 0xFFFFA8CC = 0 (NOT READY - fault detected)
+  ELSE:
+    Write: 0xFFFFA8CC = 0 (engine not running)
+
+Output:
+  0xFFFFA8CC:     Secondary chamber ready flag (1=healthy, 0=fault)
+  0xFFFFA8CF:     Secondary enable override
+
+================================================================================
+F) IDLE SPEED CONTROL
+================================================================================
+
+F.1) IDLE SPEED TARGET — calc_idle_speed_target (0x12F5E)
+Purpose: Calculate temperature and load-dependent idle RPM target
+Algorithm:
+  INPUTS:
+    ROM: Table_2D___329 (load × coolant temp → idle RPM)
+    RAM: 0xFFFFA6A9 = cold-start flag (byte)
+    RAM: 0xFFFFA6AA = warm-up flag (byte)
+    RAM: 0xFFFFA68F = cold-start boost decay accumulator
+
+  Base lookup: Interpolate Table_2D___329 by load and coolant temp → 0xFFFFA680
+  Cold-start boost: IF 0xFFFFA6A9==1, add offset and decay accumulator at 0xFFFFA68F
+  Warm-up correction: IF 0xFFFFA6AA==1, apply temperature-scaled offset
+  A/C compensation: IF compressor active, add idle step bump
+
+  OUTPUT: 0xFFFFA680 = final idle target RPM (word)
+
+F.2) IDLE SPEED CONTROLLER — idle_speed_control_18054 (0x18054)
+Purpose: 4-phase stepper motor control for IAC valve
+Algorithm:
+  INPUTS:
+    0xFFFFA680 = idle target RPM, 0xFFFFA970 = cool-down flag, 0xFFFFA96E = step position
+
+  Cool-down gate: IF 0xFFFFA970==1, hold position and return
+  RPM error: actual_RPM - 0xFFFFA680
+  PID output: proportional + integral, saturated to prevent stepper overflow
+  Ramp limiter @ 0xFFFFA96C: IF counter>0, hold position; else apply delta
+  4-phase outputs: 0xFFFFA968/69/6A/6B = Phase A/B/C/D
+  A/C compensation: IF 0xFFFFA9C8==1, add compensation steps to target
+
+  Stepper state: 0xFFFFA975 (0=init, 1=running, 2=hold)
+  Auxiliary: 0xFFFFA998 (slave stepper sync)
+
+================================================================================
+G) KNOCK DETECTION & FUEL ENRICHMENT SUBSYSTEMS
+================================================================================
+
+G.1) KNOCK PROCESSING — knock_detection_processing (0xF770)
+Purpose: Detect and respond to engine knock/detonation
+Architecture:
+  Distributed per-rotor structures: 0x58-byte channels at base 0xFFFFA4B4
+  Per-rotor data (type, retard amounts, counters) via relative offsets (@(N,r13))
+
+  4 knock channels (per-spark):
+    0xFFFFA4B8 (R0 leading), 0xFFFFA510 (R0 trailing), 0xFFFFA568 (R1 leading), 0xFFFFA5C0 (R1 trailing)
+
+  INPUTS:
+    0xFFFFA4B4 = structure base, 0xFFFFA571 = enable flag, 0xFFFFA564 = knock counter
+    0xFFFFA56D = retard level, 0xFFFFA56E = VVT solenoid status
+    ROM threshold: 0x1680000 (ADC accumulator raw value)
+
+  PROCESSING:
+    IF 0xFFFFA571 != 1: exit immediately
+    Read ADC knock sensor, apply bandpass filter
+    IF knock_level >= 0x1680000: increment 0xFFFFA564 (saturated u16), begin retard
+
+  Retard path selection (@(2,r13) per-rotor type):
+    Type 0 (SQRT complex): Lookup table @ 0xFFFFA017, multi-rotor scan
+    Type 1 (Multiplicative simple): Direct gain-based retard
+
+  OUTPUTS:
+    Per-rotor retard via structure offsets (@(4,r13))
+    0xFFFFA564 = knock counter (saturated u16)
+    0xFFFFA570 = knock state register
+
+  ROM CALIBRATION TABLES:
+    0x4ECE0 = IACV timing corrections (referenced at PC=0xF8E4, 0xF94C)
+    0x4ECC0 = VVT solenoid mask table (referenced at PC=0xF950)
+    0x4ECE4 = Knock retard calibration (referenced at PC=0xF978)
+
+================================================================================
+G.2) FUEL ENRICHMENT & TRIM SUBSYSTEM — See Section M
+================================================================================
+
+Fuel enrichment functions documented in Section M:
+  M.1: Acceleration Enrichment (0x138CC)
+  M.4: WOT Enrichment (0x14220)
+  M.5: Cold-Start Enrichment (0x142E8)
+
+G.5) ADAPTIVE FUEL TRIM — calc_adaptive_fuel_trim (0x1379C)
+Purpose: Long-term learning of per-cell fuel compensation based on O2 error
+Algorithm:
+  Determine RPM×load cell, read current adaptation value
+  Apply ±2% hysteresis gate to prevent chatter
+  Update with weighted O2 feedback (3 rotor compensation tables: nominal, hot, cold)
+  OUTPUT: Learned trim per cell (detailed mapping in Section T.2)
+
+G.6) FUEL CORRECTION PRIORITY — calc_fuel_correction_all_modes (0x12C8C)
+Purpose: Combine all fuel correction modes with priority cascade
+Algorithm:
+  Priority (high→low): Cold-start > Decel-cut > Accel > Transient > Adaptive > LTFT
+  Chain: final_fuel = base × cold_start × wot × accel × adaptive × ltft
+  Clamp to ROM min/max bounds
+  OUTPUT: Final corrected pulse width
+
+G.7) DECELERATION FUEL CUT — calc_fuel_cutoff_logic (0x13B90)
+Purpose: Cut fuel during closed-throttle deceleration for emissions
+Algorithm:
+  ENTRY: RPM > enable threshold AND throttle closed AND engine warm AND no faults
+  EXIT: RPM < disable threshold (hysteresis) OR throttle opens OR engine cools
+  OUTPUT: 0xFFFFA386 = 1 (cut active) or 0 (normal)
+
+================================================================================
+H) FUEL PUMP & OMP CONTROL
+================================================================================
+
+H.1) FUEL PUMP & OMP — fuel_pump_control_0x17510 (0x17510)
+Purpose: PWM duty cycle control for fuel pump and OMP
+  ⚠ CONFIRMED via Ghidra: OMP duty HARD CAPPED at 60/255 (~23.5% max).
+  OMP is multi-input: 3D RPM table + throttle + IAT + manifold pressure + baro +
+  engine start injection + off-throttle counter + vehicle speed timer.
+Algorithm:
+  INPUTS:
+    RAM: 0xFFFFA93C/0xFFFFA93D = pump scheduling counter / enable command
+    RAM: 0xFFFFA94C = pump speed ramp counter
+    RAM: 0xFFFFA8F4 = current pump PWM duty (float32)
+
+  STEP 1: Check pump enable conditions
+    Read 0xFFFFA93D (enable command)
+    IF disabled: set duty to 0.0, return
+
+  STEP 2: Ramp-up logic
+    Read ramp counter at 0xFFFFA94C
+    Increment counter (saturating at 255)
+    Use counter to calculate progressive duty increase
+
+  STEP 3: FPU calculation
+    Load current duty from 0xFFFFA8F4
+    Calculate new duty based on engine load and RPM
+    Clamp to 0.0-1.0 range
+
+  STEP 4: Write outputs
+    Store duty → 0xFFFFA8F4 (primary pump)
+    Store OMP duty → 0xFFFFA8F8 (secondary/oil metering pump)
+
+================================================================================
+I) COOLING FAN CONTROL
+================================================================================
+
+I.1) FAN CONTROLLER — cooling_fan_control_0x17DCC (0x17DCC)
+Purpose: Radiator fan speed control based on coolant temperature
+Algorithm:
+  INPUTS:
+    RAM: 0xFFFFA73C = coolant temperature (float32)
+    RAM: 0xFFFFA95C = current fan control output
+
+  STEP 1: Read coolant temperature
+    Load float from 0xFFFFA73C
+
+  STEP 2: Temperature threshold comparison
+    Compare against low-speed threshold (from ROM calibration)
+    Compare against high-speed threshold
+    Check A/C compressor request
+
+  STEP 3: Fan speed decision
+    IF temp < low_threshold AND no A/C: fan OFF
+    IF temp >= low_threshold OR A/C active: fan LOW
+    IF temp >= high_threshold: fan HIGH
+
+  STEP 4: Write output
+    Store result → 0xFFFFA95C
+
+================================================================================
+J) "VVT" CONTROL (⚠ MISNOMER — NOT Variable Valve Timing)
+⚠ UNCERTAIN: The RX-8 Wankel has NO valves. "VVT" is inherited from IDA naming.
+This subsystem likely controls intake port geometry, eccentric shaft phase, or
+an emission-related actuator. Ghidra places vvt_control_calc in Emissions section.
+Function names preserved as IDA identifiers; actual purpose requires live testing.
+================================================================================
+
+J.1) VVT ERROR CONTROL — calc_vvt_error_control_output (0x10DC8)
+Purpose: PID control for intake/exhaust cam phasers
+Algorithm:
+  INPUTS:
+    RAM: 0xFFFFA9D5 = intake cam angle (byte)
+    RAM: 0xFFFFA9D8 = exhaust cam angle (byte)
+    ROM: VVT target maps (RPM × load → target angle)
+
+  STEP 1: Read current cam positions
+    Intake angle from 0xFFFFA9D5
+    Exhaust angle from 0xFFFFA9D8
+
+  STEP 2: Calculate target angles
+    Lookup ROM tables based on RPM and load
+    Determine target intake and exhaust angles
+
+  STEP 3: Error calculation
+    intake_error = target_intake - actual_intake
+    exhaust_error = target_exhaust - actual_exhaust
+
+  STEP 4: PID output
+    Calculate proportional + integral terms
+    Bound output within solenoid duty limits
+
+  STEP 5: Write solenoid commands via bitfield output
+    Control word @ 0xFFFFA5D8 is a BITFIELD (not scalar):
+      Bit 0: Intake advance solenoid ON/OFF
+      Bit 1: Intake retard solenoid ON/OFF
+      Bit 2: Exhaust advance solenoid ON/OFF
+      Bit 3: Exhaust retard solenoid ON/OFF
+      Bits 4-7: Reserved/unused
+    Individual solenoid duty outputs:
+      0xFFFFA5DA = Intake cam solenoid duty (byte, 0-255)
+      0xFFFFA5DC = Exhaust cam solenoid duty (byte, 0-255)
+
+  Enable Flags (multiple conditions must be met):
+    0xFFFFAA14 = VVT target load input (float)
+    0xFFFFCE6E = VVT system enable (byte, 1=enabled)
+    0xFFFFA848 = VVT secondary enable (from combustion monitor)
+    0xFFFFB314-B31C = VVT operating range limits
+    0xFFFFB35C-B38C = VVT position feedback and error history
+
+================================================================================
+K) DTC MANAGEMENT
+================================================================================
+
+K.1) FAULT CHECK — pcm_fault_check_and_clear (0xDDF0)
+Purpose: 6-gate diagnostic pipeline with maturation counters
+Algorithm:
+  GATE LOGIC (ALL must pass to run diagnostics):
+    Gate 1: 0xFFFFA40F >= 0x64 (engine temp minimum, 0x64=100 decimal, ~80-90°C warm engine)
+    Gate 2: 0xFFFFA40A == 0 (no speed/TPS inhibit)
+    Gate 3: 0xFFFFA410 == 0 (CAN bus OK)
+    Gate 4: 0xFFFFA411 == 0 (diagnostics enabled)
+    Gate 5: 0xFFFFAAE0 == 1 (engine running) — VERIFIED from assembly:
+            0xDE24: cmp/eq #1,r0 + bf → gate PASSES only when byte == 1
+            Multi-value state byte (0x3C when off, 1 when running)
+    Gate 6: 0xFFFFB5E8 == 1 → SKIP diagnostics — VERIFIED from assembly:
+            0xDE30: cmp/eq #1,r0 + bt → diagnostics SKIPPED when byte == 1
+            When value != 1 (e.g., 0x41 engine off), diagnostics RUN
+    → IF ANY gate fails: ALL diagnostics SKIPPED for this cycle
+
+  IF all gates pass:
+    Run multi_sensor_fault_check (0xE56C)
+    24 sensors monitored (12 PRIMARY + 12 SECONDARY)
+    Result stored at 0xFFFFA430 (bit0=PRIMARY fault, bit1=SECONDARY)
+
+  MATURATION:
+    Counter at 0xFFFFBB98 incremented each fault cycle
+    When counter >= 4: promote DTC from pending to confirmed
+    Set 0xFFFFC241 = 1 to enable CAN transmission
+    Copy 7-byte DTC message from 0xFFFFC238 → 0xFFFFC518
+    Transmit via CAN periodic dispatch
+
+  MIL CONTROL:
+    0xFFFFA895: 0x00=off, 0x01=steady on, 0x02=blink (misfire)
+
+  DTC STORAGE:
+    0xFFFFA580-0xFFFFA897: 312 bytes total
+    Format: [2B code][1B status][1B counter] per DTC (up to 78 DTCs)
+
+  EEPROM PERSISTENCE:
+    DTCs saved to ABLIC S-93C56C SPI EEPROM (256 bytes)
+    Magic bytes 0x55/0xAA for validation
+    Write-verify with up to 224 retries per byte
+
+================================================================================
+L) CAN BUS COMMUNICATION
+================================================================================
+
+L.1) CAN PERIODIC HANDLER — can_periodic_task_handler (0xA57C)
+  Counter at 0xFFFFA188 (16-bit word)
+  Increments each cycle, triggers CAN TX at count >= 0x12C (300 decimal = 300ms)
+  ⚠ CORRECTED: Previously claimed CAN IDs 0xCA/0xDC — those are internal mailbox/queue
+  identifiers, NOT actual CAN arbitration IDs. Actual Mazda CAN IDs confirmed by Ghidra:
+  TX: 0x201 (RPM+speed+throttle), 0x203 (engine status), 0x420 (MIL), etc.
+  RX: 0x212, 0x216, 0x430, 0x4B0, 0x4C0, etc. Range: 0x41-0x650.
+
+L.2) DIAGNOSTIC SERVICES (UDS Protocol):
+  SID 0x10: DiagnosticSessionControl — 3 session modes
+  SID 0x22: ReadDataByIdentifier — DID 0xE6F0 returns calibration at 0x1FFC
+  SID 0x23: ReadMemoryByAddress — Full memory dump when security unlocked
+  SID 0x27: SecurityAccess — Seed: 0x55/0xAA, Key pattern: 0x??4DACCD
+  SID 0x34: RequestDownload — Flash controller base 0xFFF82000 (SH7055 flash
+            memory controller region, NOT direct ROM), max 1023 bytes/block
+  SID 0x36: TransferData — 15-bit cyclic sequence counter validation
+  Session state stored at 0xFFFFDFB0-0xFFFFDFB5 (6 bytes)
+
+================================================================================
+M) ACCELERATION / TRANSIENT FUEL ENRICHMENT
+================================================================================
+
+M.1) MAIN ACCELERATION ENRICHMENT — calc_accel_fuel_enrichment (0x138CC)
+  Purpose: Throttle tip-in fuel enrichment
+  Algorithm:
+    IF NOT engine_running(0xFFFFB5A4): RETURN 0.0
+    tps_delta = 0xFFFFC12C (delta since last cycle)
+    enrichment = FPU_FMAC(accel_table if tps_delta>0 else decel_table, tps_delta)
+    CLAMP to ROM min/max
+    OUTPUTS: 0xFFFFA724 (accumulator), 0xFFFFA71C (final), 0xFFFFA731 (active flag)
+
+M.2) TRANSIENT DECAY — calc_transient_fuel_enrichment (0x12EF2)
+  Purpose: Gradual enrichment step-down via counter decay
+  Algorithm:
+    IF 0xFFFFAADA==0: RETURN 0
+    Mode A (rapid accel): counter @ 0xFFFFA444 > 0 → apply enrichment
+    Mode B (decel taper): counter @ 0xFFFFA445 decrementing → gradual fade
+    OUTPUT: 0xFFFFA68E (counter output)
+
+M.3) THROTTLE POSITION FILTER — calc_throttle_position_filter (0x1345C)
+  Purpose: Mode-dependent IIR low-pass filter for TPS
+  Gain selection: high (0xFFFFA6B7) from 0x6F71C, low (0xFFFFA6B8) from 0x6F72C, default from 0x6F74C
+  IIR: filtered = prev × K_alpha + delta × K_beta (separate accel/decel paths)
+
+M.4) WOT FUEL ENRICHMENT — calc_wot_fuel_enrichment (0x14220)
+  IF load > Table_2D_110_threshold: enrichment = TABLE_LOOKUP(Table_2D_110, load) → 0xFFFFA784
+  ELSE: enrichment = 0
+
+M.5) COLD-START ENRICHMENT — calc_cold_start_fuel_enrichment (0x142E8)
+  enrichment = TABLE_LOOKUP(Table_2D_111, coolant_temp) → 0xFFFFA785
+
+M.6) ROTARY ENRICHMENT CONTROLLER — rotary_fuel_enrichment_controller (0x14C2C)
+  Purpose: Master enrichment state machine combining all modes (614 bytes)
+  Inputs: IAT(0xFFFFBC1C), MAP(0xFFFFAA40), TPS(0xFFFFB5B8)
+  Algorithm:
+    tps_delta = current_tps - previous_tps
+    IF tps_delta > threshold: SET accel_enrichment(0xFFFFA837) = 1
+    IF manifold_delta > threshold: SET manifold_enrichment(0xFFFFA831) = 1
+    Check secondary chamber status (0xFFFFA854, 0xFFFFB5E8)
+    RPM-based enrichment gating via 0xFFFFA81A threshold
+    Multi-condition check: fuel_cut(0xFFFFC656), EGR(0xFFFFC64B),
+      purge(0xFFFFC600), knock(0xFFFFC68E)
+    IF all conditions pass:
+      enrichment = TABLE_3D_LOOKUP(Table_3D_12, rpm, load, temp)
+      Apply damping filter via 0xFFFFA8B4 coefficient
+      WRITE_FLOAT(0xFFFFA7FC, filtered_enrichment)
+
+================================================================================
+N) OIL METERING PUMP (OMP) CONTROL
+================================================================================
+
+N.1) OMP DUTY CALCULATION
+  Purpose: Calculate oil injection rate for Wankel rotary lubrication
+  Calibration Tables:
+    Oil_Metering_By_Load:     0x790C4 (data), 0x79034 (axis, 18 breakpoints)
+                              Load axis values per ROM data, uint8 duty 0-255
+    Oil_Metering_By_Throttle: 0x79264 (data), 0x79208 (axis, 19 breakpoints)
+                              Throttle range: 0-90° TPS
+  Algorithm:
+    base_duty = TABLE_2D_LOOKUP(Oil_Metering_By_Load, manifold_pressure, rpm)
+    temp_factor = INTERPOLATE_TEMP(coolant_temp @ 0xFFFFBC1C)
+    duty_corrected = base_duty * temp_factor
+    throttle_duty = TABLE_1D_LOOKUP(Oil_Metering_By_Throttle, throttle_angle)
+    IF transient_mode: duty_final = SATURATE_ADD(duty_corrected, throttle_duty)
+    ELSE: duty_final = duty_corrected
+    Per-rotor output:
+      Lead rotor → 0xFFFFB104 (float)
+      Trail rotor → 0xFFFFB108 (float)
+      Combined → 0xFFFFB10C (float)
+
+N.2) PUMP OUTPUT CONTROL — pump_control_output (0x2602C)
+  Purpose: Physical OMP pump PWM generation
+    IF pump_enabled(0xFFFFCD01): BITFIELD_SET(PDDR_W, bit_11)
+    Final duty at 0xFFFFB5E4
+
+N.3) RPM SCALING — fuel_pump_rpm_scale (0x262FA)
+  Purpose: RPM-dependent pump speed scaling
+    rpm_scaled = (RPM / base_scale) * multiplier
+    WRITE(0xFFFFB5F4, pwm_value)
+
+================================================================================
+O) INTAKE MANIFOLD PRESSURE CONTROL
+================================================================================
+
+O.1) PRESSURE ERROR CALCULATION — calc_manifold_pressure_error_clamp (0x10A5C)
+  Purpose: Clamped pressure error with 30× gain
+  Algorithm:
+    pressure_error = (target_pressure - measured_pressure) * 30.0
+    CLAMP to ±limit
+    Output → 0xFFFFA3DC (manifold pressure, float kPa)
+
+O.2) PRESSURE DIFFERENTIAL — calc_manifold_pressure_error_diff (0x10A88)
+  Purpose: Rate-of-change pressure error for derivative control
+
+O.3) BAROMETRIC SENSOR — calc_sensor_pressure_value (0x11198)
+  Purpose: Barometric pressure processing
+  Calibration:
+    Pressure slope: 0x7A9C0 = 25.3125× ADC gain
+    Pressure offset: 0x7A9BC = 0.019 kPa baseline
+    Range: 0-1013 kPa (altitude compensation)
+
+O.4) SSV 3-STATE CONTROL — throttle_position_classify (0xC460)
+  Purpose: Secondary Shutter Valve port selection
+  States: 0=2-port (idle), 1=mixed (transition), 2=6-port (WOT)
+  Output → 0xFFFFA325 (SSV mode state)
+  Switchpoint axis: 0x78618 — CORRECTED: This is a TEMPERATURE axis (°C),
+  NOT a pressure axis. Values: -40.0, -26.0, 0.0, 20.0, 48.0, 60.0, 88.0°C
+  SSV switching is temperature-dependent, not load-dependent at this table.
+
+O.5) PRESSURE TABLE LOOKUP — fuel_air_bilinear_interpolation (0xD3DC)
+  Purpose: 2D manifold pressure table interpolation
+
+O.6) DUAL-ROTOR AFR — air_fuel_ratio_calc (0xEBA8)
+  Purpose: Per-rotor AFR with 4 injectors (lead/trail per rotor)
+  Calibration:
+    Lead Rotor 1 scaling: 0x6ACE4
+    Trail Rotor 1 scaling: 0x6ACF8
+    Rotor 2 scaling: 0x6996E
+  RAM outputs:
+    Per-injector AFR: 0xFFFFA470-0xFFFFA488
+    AFR status flags: 0xFFFFA49A-0xFFFFA4A0 (7 bytes, saturation tracking)
+    Target AFR: 0xFFFFA334
+    Measured AFR: 0xFFFFA348
+    Final AFR trim: 0xFFFFA364
+
+================================================================================
+P) EMISSIONS / COMBUSTION MONITORING
+================================================================================
+
+P.1) COMBUSTION QUALITY MONITOR — combustion_quality_monitor (0x1C690)
+  Purpose: Catalyst efficiency detection for OBD-II P0420/P0430
+  Per-rotor tracking: Rotor A flag at 0xFFFFAE45, Rotor B at 0xFFFFAE46
+  Note: 4 spark events total = 2 rotors × 2 spark plugs (leading + trailing)
+
+P.2) COMBUSTION FEEDBACK — combustion_feedback_calc (0x1D434)
+  Purpose: PID-based closed-loop O2 sensor feedback
+  Maintains stoichiometric (Lambda=1.0) AFR with per-rotor trim
+  RAM region: 0xFFFFADE8-0xFFFFADFF (correction factors)
+              0xFFFFAE00-0xFFFFAEFF (VVT, enrichment, combustion outputs)
+
+P.3) FUEL ENRICHMENT CONTROL — fuel_enrichment_control (0x1DB78)
+  Purpose: Multi-mode enrichment (cold start, warm, O2 feedback)
+  Temperature-corrected enrichment for catalyst warming phase
+
+P.4) WANKEL ROTARY CONTROL — wankel_rotary_control (0x1E820)
+  Purpose: Integrated Wankel engine control (928 bytes)
+  Dual rotor synchronization, per-rotor OMP coordination
+  Lead/trail spark and OMP timing coordination
+
+================================================================================
+Q) REFERENCE CALIBRATION ADDRESSES & STRUCTURES
+================================================================================
+
+Critical ROM Lookup Tables:
+─────────────────────────
+
+  FUEL SYSTEM:
+    0x6FA08 ± 4:    Fuel scaling factor (rotor-dependent multiplier)
+    0x6FA10 ± 4:    Fuel accumulate factor (fmac operand)
+    0x6F9FE ± 2:    RPM boundary gate 1 (hysteresis enable)
+    0x6FA04 ± 2:    RPM boundary gate 2 (hysteresis disable)
+    0x6CF44:        Max table index (saturation limit)
+    0x6FEB8:        Fuel correction base axis (rotor dispatch)
+    0x6FEE4:        Fuel correction multi-table (rotor dispatch)
+
+  IGNITION SYSTEM:
+    0x6FA1A ± 2:    Reference advance angle (ROM bytes: 0x01, 0x77; if uint8 scale x*0.5-50 → 9.5° BTDC)
+    0x6FA24 ± 2:    Minimum safe advance (detonation floor)
+    0x6FA2C ± 2:    Maximum safe advance (pressure ceiling)
+    0x6FA46 ± 2:    Primary knock reduction gain (0.5-0.8)
+    0x6FA4C ± 2:    Secondary knock reduction gain (0.3-0.5)
+    0x6FA50 ± 2:    Knock threshold counter
+    0x6FA54 ± 2:    Knock margin (conservative estimate)
+    0x6FA64 ± 2:    Detonation cascade limit
+
+  CLOSED-LOOP O2 FEEDBACK:
+    0x6B8D4:        P-gain TABLE DESCRIPTOR (58-entry, axis 0x7A230, data 0x7A318)
+    0x6B8E8:        Secondary TABLE DESCRIPTOR (14-entry, axis 0x7A354, data 0x7A38C)
+    0x6B8F0 ± 4:    Integral min bound (lower limit)
+    0x6B8F4 ± 4:    Integral max bound (upper limit)
+    0x6B900:        I-gain TABLE DESCRIPTOR (1-entry, value=8.0 at 0x7A400)
+    0x6B90C:        I-gain 2 TABLE DESCRIPTOR (1-entry, value=500.0 at 0x7A404)
+
+  SECONDARY CHAMBER (SSV):
+    0x7863C:        Base switchpoint table (contains thresholds)
+    0x7863C+0x10 ± 4:   Switchpoint offset (opening load margin)
+    0x7863C+0x14 ± 4:   Primary chamber gain 1
+    0x7863C+0x18 ± 4:   Primary chamber gain 2
+    0x7863C+0x1C ± 4:   Secondary chamber threshold
+    0x7863C+0x20 ± 4:   Secondary chamber load limit
+    0x7863C+0x24 ± 4:   Valve closing decay rate
+
+RAM Working Variables:
+───────────────────
+
+  FUEL:
+    0xFFFFA108 ± 4:     Rotor 0 pulse width (float32, milliseconds)
+    0xFFFFA10C ± 4:     Rotor 1 pulse width (float32)
+    0xFFFFA110 ± 1:     Rotor 0 enable flag
+    0xFFFFA111 ± 1:     Rotor 1 enable flag
+    0xFFFFA112 ± 2:     Current RPM (cached)
+    0xFFFFA114 ± 2:     Current MAP (cached)
+    0xFFFFA7B4 ± 4:     Dual-channel fuel command (float32)
+    0xFFFFA7BC ± 4:     Manifold load / sensor correction (float32)
+    0xFFFFB5A4 ± 1:     System condition flag 1 (byte, used in dual-channel dispatch)
+    0xFFFFB5AC ± 1:     System condition flag 2 (byte)
+    0xFFFFB5B8 ± 4:     System load reference (float32, SSV threshold)
+    0xFFFFB618 ± 4:     Initial FR4 value for dual-channel calc (float32)
+
+  IGNITION:
+    0xFFFFAA24 ± 4:     Min safe advance (float32)
+    0xFFFFAA2C ± 4:     Max safe advance (float32)
+    0xFFFFAA38 ± 4:     Cold start boost scalar (float32)
+    0xFFFFAA44 ± 4:     Boost margin (float32, negated)
+    0xFFFFAA5E ± 1:     Advance enable flag
+    0xFFFFAA5D ± 1:     Secondary enable flag
+    0xFFFFAA74 ± 2:     Current advance value (word)
+    0xFFFFAA76 ± 2:     Advance recovery counter
+    0xFFFFAA78 ± 2:     Secondary advance trim (knock penalty)
+    0xFFFFAA7A ± 1:     Sensor diagnostic flag
+
+  CLOSED-LOOP O2:
+    0xFFFFA324 ± 1:     Closed-loop active flag (0=converged, 1=correcting)
+    0xFFFFA326 ± 2:     Reference value B (word, subtracted from 0xFFFFA378)
+    0xFFFFA328 ± 4:     Integral gain constant (float32)
+    0xFFFFA32C ± 4:     Proportional result (float32)
+    0xFFFFA330 ± 4:     Proportional error after gating (float32)
+    0xFFFFA334 ± 4:     Target AFR setpoint (float32, per-rotor @ +rotor*4)
+    0xFFFFA33C ± 4:     Per-rotor trim bounds (float32, per-rotor @ +rotor*4)
+    0xFFFFA344 ± 4:     Clamped proportional correction (float32)
+    0xFFFFA348 ± 4:     Actual sensor reading (float32)
+    0xFFFFA34C ± 4:     Intermediate trim storage (float32)
+    0xFFFFA350 ± 4:     Per-rotor fuel trim (float32, per-rotor @ +rotor*4)
+    0xFFFFA358 ± 4:     Integral term 1 result (float32)
+    0xFFFFA35C ± 4:     Intermediate integral (float32)
+    0xFFFFA360 ± 4:     Final integral result (float32)
+    0xFFFFA364 ± 4:     Integral output / accumulator (float32)
+    0xFFFFA368 ± 4:     Per-rotor integrated trim (float32, @ +rotor*4)
+    0xFFFFA370 ± 4:     Raw proportional output (float32)
+    0xFFFFA378 ± 2:     Reference value A (word, dual-purpose with fuel cut)
+    0xFFFFA381 ± 1:     O2 threshold index (byte, ×32 for deadband)
+    0xFFFFA383 ± 1:     Rotor pair index (0-1)
+    0xFFFFA384 ± 1:     Rotor status (0xFF = invalid)
+    0xFFFFA385 ± 1:     Alternative O2 result storage
+    0xFFFFA38C ± 1:     O2 feedback disable gate (0=enabled, nonzero=disabled)
+
+  FUEL CUT:
+    0xFFFF9EF8 ± 2:     Raw RPM from hardware (word, read-only)
+    0xFFFF9F80 ± 4:     System RPM as float32 (read-only)
+    0xFFFFA374 ± 4:     RPM error magnitude as float32
+    0xFFFFA378 ± 2:     RPM error duty / reference value A (word, dual-purpose)
+    0xFFFFA37A ± 2:     RPM error word (cached from 0xFFFF9EF8)
+    0xFFFFA386 ± 1:     Final fuel cut command (0=off, 1=cut active)
+
+  SECONDARY CHAMBER (SSV):
+    0xFFFFA428 ± 1:     Crank start flag (byte, 0=cranking, used for mode split)
+    0xFFFFA8B4 ± 4:     Final solenoid duty cycle output (float32)
+    0xFFFFA8B8 ± 1:     Activation status flag (1=reset mode, clears all outputs)
+    0xFFFFA8BC ± 4:     Primary chamber output (float32)
+    0xFFFFA8C0 ± 4:     Accumulated valve command (float32)
+    0xFFFFA8C4 ± 4:     Secondary chamber output (float32)
+    0xFFFFA8C8 ± 4:     VVT-dependent primary command (float32)
+    0xFFFFA8CC ± 1:     Secondary chamber ready flag (from health check)
+    0xFFFFA8CD ± 1:     Secondary enable flag (from switchpoint)
+    0xFFFFA8CE ± 1:     Secondary valve permission
+    0xFFFFA8CF ± 1:     Secondary enable override
+    0xFFFFAA14 ± 4:     Target load for SSV calc (float32)
+    0xFFFFAE54 ± 4:     Chamber temperature (float32)
+    0xFFFFBFD4 ± 1:     Gain table select flag (byte)
+    0xFFFFCE6E ± 1:     VVT enabled flag (byte)
+
+================================================================================
+G) FPU HELPER FUNCTIONS & CONVENTIONS
+================================================================================
+
+FPU Register Mapping (SH7055 Conventions):
+  FR0-FR7:        Floating-point working registers
+  FR12-FR15:      Preserved across subroutine calls (callee-save)
+  FPUL:           Integer-to-float conversion register
+
+Key FPU Operations Used:
+
+  float fpul, frN        Convert FPUL (integer) to float in frN
+  ftrc frN, fpul         Convert frN (float) to integer in FPUL
+  fmov frN, frM          Move/copy float register
+  fadd frN, frM          FR_M = FR_N + FR_M
+  fsub frN, frM          FR_M = FR_M - FR_N
+  fmul frN, frM          FR_M = FR_N * FR_M
+  fdiv frN, frM          FR_M = FR_M / FR_N
+  fmac frN, frM, frK     FR_K = FR_N * FR_M + FR_K (multiply-accumulate)
+  fcmp/gt frN, frM       Set T bit if FR_N > FR_M
+  fcmp/eq frN, frM       Set T bit if FR_N == FR_M
+
+Helper Subroutine Calls (via jsr):
+  fpu_multiply_accumulate(ROM_table @ r4)
+    Loads float from ROM table @ r4
+    Multiplies FR0 * FR1, accumulates result
+    Returns FR0 = result
+
+  fpu_abs_float(float @ FR4)
+    Returns FR0 = |FR4|
+
+  fpu_compare_and_select(frN, frM, frK)
+    Returns min(frN, max(frM, frK))
+
+  sensor_range_check_3ED0C(float @ FR4)
+    Validates finite value, applies clamps
+    Returns FR0 = clamped result
+
+  fpu_sqrt_float(float @ FR4)
+    Returns FR0 = sqrt(FR4)
+
+================================================================================
+R) MAF SENSOR PROCESSING
+================================================================================
+
+SUBSYSTEM OVERVIEW:
+  Primary function: Convert raw MAF voltage to corrected mass airflow (g/s)
+  Multi-stage pipeline: linearization → temp correction → O2 feedback → MAP trim
+  Wankel-specific: 2x pulse frequency compensation for dual-rotor breathing
+
+---
+
+R.1) MAF LINEARIZATION — calc_maf_sensor_flow (0x1332C)
+----------------------------------------------------------------------
+  Input: Raw MAF voltage from ADC, cold-start flag @ 0xFFFFA6B8
+  Algorithm:
+    7-stage voltage linearization via chained TABLE DESCRIPTORs (0x69F72-0x69FEA)
+    IF 0xFFFFA6B8==1: apply cold-start enrichment from tables 0x69FAE-0x69FD6
+    OUTPUT: Base MAF → 0xFFFFAE54 (g/s), flag → 0xFFFFA6DF
+
+---
+
+R.2) MAF O2 CORRECTION — maf_sensor_correction_24234 (0x24234)
+----------------------------------------------------------------------
+  Inputs: 0xFFFFAE54 (base MAF), 0xFFFFB33F/B340 (O2 enable), 0xFFFFB332 (O2 trim), 0xFFFFB5CC (MAP)
+  Algorithm:
+    O2 correction: IF 0xFFFFB33F AND 0xFFFFB340: apply O2_trim × table 0x6ACCE, else open-loop
+    MAP trim: Apply pressure correction from tables 0x6ACE4/0x6ACF8 → 0xFFFFB49C
+    Transient: IF tip-in detected, apply ROM 0x6AD0C, set 0xFFFFB4A4=1
+    COMPOSITE: final_maf = corrected_maf × MAP_trim × transient_factor → 0xFFFFB494
+
+---
+
+R.3) AFR CALCULATION — air_fuel_ratio_calc (0xEBA8)
+----------------------------------------------------------------------
+  Input:
+    Corrected MAF @ 0xFFFFB494
+    Stoichiometric target @ 0xFFFFB5B8 (nominal 14.7:1)
+    Rotor 2 offset @ ROM 0x6996E (asymmetric porting compensation)
+
+  Algorithm:
+    FOR each rotor (0, 1):
+      FOR each injector (leading, trailing):
+        Calculate individual AFR target
+        IF rotor == 1:
+          Apply asymmetry offset from 0x6996E
+        Store to per-injector output:
+          0xFFFFA470 (R0 leading), 0xFFFFA474 (R0 trailing)
+          0xFFFFA478 (R1 leading), 0xFFFFA47C (R1 trailing)
+
+    Integral accumulator @ 0xFFFFA498:
+      integral += (target_AFR - actual_AFR) × I_gain
+      Clamped to prevent integral windup
+
+    Closed-loop flag @ 0xFFFFA463:
+      0 = open-loop, 1 = closed-loop active
+
+  Output: 4 per-injector AFR targets, integral state
+
+
+================================================================================
+S) CAN BUS COMMUNICATION
+================================================================================
+
+SUBSYSTEM OVERVIEW:
+  Dual CAN controllers: HCAN0 (primary, 16 mailboxes) and HCAN1 (secondary, 6)
+  Hardware: SH7055 on-chip HCAN modules at 0xFFFF8000+
+  Message scheduling: 10ms periodic task with 300ms timeout for queue processing
+  TX strategy: Round-robin 4-mailbox rotation with automatic retry on failure
+
+---
+
+S.1) CAN PERIODIC TASK — can_periodic_task_handler (0xA57C)
+----------------------------------------------------------------------
+  Execution: Every 10ms from task scheduler
+
+  Algorithm:
+    STEP 1: Increment status counter @ 0xFFFFA188
+    STEP 2: IF counter >= 0x12C (300ms timeout):
+      Trigger message queue processing
+      Enqueue pending TX messages (⚠ internal queue IDs 0xCA/0xDC map to standard Mazda CAN IDs 0x201-0x650)
+    STEP 3: Heartbeat timer @ 0xFFFFA18A:
+      Decrement 4ms countdown
+      IF expired: toggle Port B bit 4 (CAN activity LED/watchdog)
+
+---
+
+S.2) TX MAILBOX SCHEDULING — hcan0_mailbox_rotate_enqueue (0xA608)
+----------------------------------------------------------------------
+  Reads HCAN0 TX message queue from ROM @ 0x4E960 (16 entries, 16B each)
+  Round-robin index @ 0xFFFF802D cycles through 4 active mailboxes
+  For each message:
+    Pack CAN ID + DLC + data payload into mailbox registers
+    Set TXCR bit to initiate transmission
+
+---
+
+S.3) TX ERROR RECOVERY — can_tx_abort_and_retry (0x9CC6)
+----------------------------------------------------------------------
+  Triggered when TX retry flag @ 0xFFFF802C is set
+  Reads TXPR_W (TX pending register) to identify stuck mailboxes
+  Writes ABACK_W to abort, then TXCR_W to retry
+  can_tx_queue_retry_all (0xE074) scans all 22 mailboxes (16+6)
+
+
+================================================================================
+T) EEPROM / ADAPTIVE LEARNING
+================================================================================
+
+SUBSYSTEM OVERVIEW:
+  Hardware: ABLIC S-93C56C SPI EEPROM, 256 bytes, 3-wire protocol (bit-banged)
+  Contains: Immobilizer keys, vehicle ID, adaptive fuel trim data
+  Protocol: SPI via GPIO bit-bang (CLK/MOSI/MISO on Port A)
+  Checksum: 8-bit additive, verified on each read
+  Cold-start: Loaded into RAM at 0xFFFFDFE4 base during power-on init
+
+---
+
+T.1) EEPROM READ AND VALIDATE — eeprom_read_validate (0x450)
+----------------------------------------------------------------------
+  Called during cold-start initialization (from sub_4E0 main init).
+
+  Algorithm:
+    STEP 1: Read validation byte from RAM @ (0xFFFFDFE4 + 8)
+    STEP 2: Compare with magic 0x55
+      IF mismatch: RETURN -1 (invalid — triggers full re-read from EEPROM chip)
+    STEP 3: Copy 8 bytes from (0xFFFFDFE4) to destination buffer (R4)
+      Loop: R6 counts 0→7, byte-by-byte copy
+    STEP 4: Write 0xAA acknowledgment marker back to (0xFFFFDFE4 + 8)
+    STEP 5: RETURN 1 (success)
+
+  Memory Layout (256-byte EEPROM → RAM mirror):
+    0xFFFFDFE4+0x00..0x01: Header (0x5A 0xFF — format identifier)
+    0xFFFFDFE4+0x02..0x09: Encrypted immobilizer keys (8 bytes, varies per vehicle)
+    0xFFFFDFE4+0x08:       Validation byte (0x55 = valid, 0xAA = acknowledged)
+    0xFFFFDFE4+0x0A..0x1F: Stable configuration (ECU baseline, does not change)
+    ⚠ UNVERIFIABLE 0xFFFFDFE4+0x20..0x61: Adaptive learning data (fuel trims, knock corrections)
+      (Specific offsets not publicly documented)
+    0xFFFFDFE4+0x80..0x97: Vehicle ID string (VIN or model+serial, ASCII)
+    0xFFFFDFE4+0xA0..0xFC: Unused (0xFF fill)
+    0xFFFFDFE4+0xFD..0xFF: Footer/checksum
+
+  Related: is_eeprom_valid (0x624), spi_set_clk_high_wait (0x9C0),
+           spi_set_clk_low_wait (0x9DE), eeprom_write_verify_bytes (0x9FC2),
+           validate_data_block_header (0x636)
+
+---
+
+T.2) ADAPTIVE FUEL TRIM CALCULATION — calc_adaptive_fuel_trim (0x1379C)
+----------------------------------------------------------------------
+  Called from main fuel control loop when adaptive learning is enabled.
+
+  Input Phase:
+    FR15 = stoich_target from 0xFFFFB5B8 (baseline AFR target)
+    FR14 = stoich_current from 0xFFFFC12C (current MAF-based correction)
+    FR3 = MAF correction from 0xFFFFB5C4
+    R0 = rotor_condition from 0xFFFFB5A4 (byte, 0 = normal)
+
+  Error Calculation:
+    trim_error = stoich_target - MAF_correction    (FR2 = FR15 - FR3)
+    Store trim_error → 0xFFFFA728
+
+  Rotor-Specific Table Selection:
+    IF rotor_condition (0xFFFFB5A4) != 0:
+      Use Table A descriptor @ 0x6A868 (9-axis, rotor-active scaling)
+    ELIF rotor_secondary (0xFFFFB5AC) == 1:
+      Use Table A descriptor @ 0x6A868
+    ELSE:
+      Use Table B descriptor @ 0x6A87C (9-axis, normal scaling)
+
+  Scaling:
+    scaled_trim = fpu_multiply_accumulate(table_descriptor, trim_error)
+    Store scaled_trim → 0xFFFFA720 (final trim result)
+
+  Adaptive Enable Gate (checked only if 0xFFFFAADA == 1):
+    IF stoich_target (FR15) <= lower_threshold (Table_2D___105_+0x10 = 1500.0):
+      SKIP adaptive (FR15 = 0.0)
+    IF engine_load (0xFFFFC084) > upper_threshold (Table_2D___105_+0x14 = 0.00977):
+      APPLY adaptive trim
+    IF RPM (0xFFFFA424) >= RPM_threshold (Table_2D___105_+0x0C = 375):
+      APPLY adaptive trim
+
+  Trim Enable/Disable Logic:
+    IF stoich_ref (FR14) > enable_threshold (Table_2D___105_+0x18 = 0.6):
+      Set trim_active_flag @ 0xFFFFA730 = 1
+      Add offset (0x138B8 constant) to trim
+    IF stoich_ref (FR14) > disable_threshold (calculated from +0x18 + offset):
+      Set trim_active_flag @ 0xFFFFA730 = 0
+
+  Clamping:
+    IF trim_active:
+      clamp(trim, lower=Table_2D___105_+0x1C = -2.8, upper=Table_2D___105_+0x20 = 0.7)
+      via fpu_compare_and_select (min/max enforcer)
+    Store final_trim → 0xFFFFA718
+
+  Tuning Knobs:
+    0x6A868: Adaptive trim table descriptor A (rotor-active) [TABLE DESCRIPTOR, 9 axis]
+    0x6A87C: Adaptive trim table descriptor B (normal)       [TABLE DESCRIPTOR, 9 axis]
+    0x72C5C (Table_2D___105_+0x0C): RPM threshold = 375 (word)
+    0x72C60 (Table_2D___105_+0x10): Stoich lower threshold = 1500.0 (float)
+    0x72C64 (Table_2D___105_+0x14): Load upper threshold = 0.00977 (float)
+    0x72C68 (Table_2D___105_+0x18): Trim enable threshold = 0.6 (float)
+    0x72C6C (Table_2D___105_+0x1C): Trim lower clamp = -2.8 (float)
+    0x72C70 (Table_2D___105_+0x20): Trim upper clamp = 0.7 (float)
+
+
+================================================================================
+U) OBD-II / UDS DIAGNOSTIC SERVICES
+================================================================================
+
+SUBSYSTEM OVERVIEW:
+  Protocol: UDS (Unified Diagnostic Services) over ISO 15765 CAN transport
+  Request CAN ID: 0x07E0 (tester → ECU)
+  Response CAN ID: 0x07E8 (ECU → tester)
+  Dispatch table: ROM @ 0x1479 (cmp/eq chain for SID routing)
+  Session state: RAM @ 0xFFFFDFB0-0xFFFFDFB5
+  Diagnostic buffer: 0xFFFFD3F0 (CAN message buffer for flash handlers)
+
+---
+
+U.1) SID DISPATCH TABLE — diag_dispatcher (0x1479)
+----------------------------------------------------------------------
+  Sequential cmp/eq chain determines handler for each Service ID:
+
+  Address   CMP Value  Service                    Handler
+  0x1486    #0x10      DiagnosticSessionControl   → 0x1572
+  0x148A    #0x27      SecurityAccess             → 0x17D8
+  0x148E    #0x3E      TesterPresent              → 0x1908
+  0x1492    #0x11      ECUReset                   → 0x1970
+  0x1496    #0x22      ReadDataByIdentifier       → 0x19DA
+  0x149A    #0x3B      (Mazda custom service)     → 0x1A42
+  0x149E    #0x34      RequestDownload            → 0x1A70
+  0x14A2    #0x36      TransferData               → 0x1B8C
+  0x14A6    #0x37      RequestTransferExit        → 0x1CB8
+
+  Additional (separate handler at 0x5647E):
+  SID 0x14  ClearDiagnosticInformation            → 0x5647E
+  SID 0xB1  (bootloader entry, Mazda custom)      → 0x1D00
+
+  NOTE: SID 0x23 (ReadMemoryByAddress) is NOT in the dispatch table.
+    It works after security unlock, likely handled by SH7055 boot ROM
+    or dynamically registered during extended session.
+
+---
+
+U.2) SECURITY ACCESS — diag_security_access_sid27 (0x17D8)
+----------------------------------------------------------------------
+  Two-step challenge-response authentication:
+
+  Phase 1 — Seed Request (sub-function 0x01):
+    ECU generates 3-byte random seed
+    TX response: [0x67, 0x01, seed_b0, seed_b1, seed_b2]
+    Store seed in session state @ 0xFFFFDFB0
+
+  Phase 2 — Key Verify (sub-function 0x02):
+    Receive 3-byte key from tester
+    Secret string: ⚠ PLAUSIBLE "MazdA" = {0x4D, 0x61, 0x7A, 0x64, 0x41}
+      (ConnorRigby repo exists but secret not publicly confirmed)
+    Key derivation: 64-iteration bit-manipulation on 24-bit seed
+    ROM verification bytes at 0x18C8-0x18DC: compare against 0x4D, 0xAC, 0xCD
+    IF key matches: set security_unlocked flag @ 0xFFFFDFB4
+    IF key fails: increment attempt counter, NRC 0x35 after 3 failures
+
+  Session Types (SID 0x10):
+    ⚠ UNVERIFIABLE 0x81: Default session (limited services) — Firmware-derived, no public source
+    ⚠ UNVERIFIABLE 0x85: Extended diagnostic (enables SID 0x23/0x27) — Firmware-derived, no public source
+    ⚠ UNVERIFIABLE 0x87: Programming session (enables flash write 0x34/0x36/0x37) — Firmware-derived, no public source
+
+---
+
+U.3) FLASH PROGRAMMING SEQUENCE — RequestDownload/TransferData/TransferExit
+----------------------------------------------------------------------
+  Prerequisites: Session 0x87 + security access unlocked
+
+  Step 1: SID 0xB1 [0x00, 0xB2, 0x00] — Enter bootloader mode
+  Step 2: SID 0x34 — RequestDownload (from offset 0x2000)
+    ⚠ PLAUSIBLE First 0x2000 bytes (8KB) protected — boot ROM / vector table
+      (General SH7055 boot block behavior, not RX-8 specific)
+    All flash handlers receive R4 = 0xFFFFD3F0 (diagnostic buffer)
+  Step 3: SID 0x36 — TransferData (chunked loop with sequence counter)
+  Step 4: SID 0x37 — RequestTransferExit (finalize + checksum verify)
+
+  Known DIDs (SID 0x22):
+    0xF190: VIN
+    0xF18C: Calibration ID (returns "60E1D400" for this ROM)
+    0xE6F0: ECU identifier string
+
+  Tuning Knobs:
+    0x1479: SID dispatch table base (ROM)
+    0x18C8-0x18DC: Security key verification constants (ROM)
+    0xFFFFDFB0-B5: Session state variables (RAM)
+    0xFFFFD3F0: Diagnostic CAN message buffer (RAM)
+
+
+================================================================================
+V) MISFIRE DETECTION & CATALYST PROTECTION
+================================================================================
+
+SUBSYSTEM OVERVIEW:
+  Detection method: Piezoelectric knock sensor + combustion efficiency monitoring
+  ⚠ NOTE: Uses traditional piezo knock sensors, NOT ionization-based detection.
+  Architecture: Per-rotor (2 rotors × 2 spark events = 4 combustion events per revolution)
+  Protection strategy: FUEL CUT (not ignition cut) — critical for Wankel catalyst safety
+  Rationale: Ignition cut causes unburned fuel → catalyst coking + rapid temperature rise
+  DTC codes: P0300-P0304 (misfire), P0420/P0421/P0430 (catalyst efficiency)
+
+  ⚠ GHIDRA CROSS-VALIDATION NOTE (2026-04-05):
+  Ghidra community analysis has only 2 misfire-related functions:
+    misfireDetectInit (0xAB8A) — actually more of an O2 sensor init
+    lookupCodeTypeMisfire (0x5E296) — DTC code type lookup
+  Our misfire escalation details (progressive fuel reduction at 25%/50%/75%)
+  remain INFERRED and may be overstated. The thresholds (pending=4, confirmed=8)
+  and DTC codes (P0300-P0304) are standard OBD-II but specific reduction rates
+  are NOT confirmed by either firmware analysis.
+
+---
+
+V.1) KNOCK/MISFIRE DETECTION — knock_detection_processing (0xF770)
+----------------------------------------------------------------------
+  Size: 0x320 bytes (extensive per-rotor analysis)
+
+  Algorithm:
+    STEP 1: Check knock_enabled flag @ 0xFFFFA571
+      IF disabled: RETURN (skip all detection)
+    STEP 2: FOR each rotor (0, 1):
+      a) Compute knock pulse window via pulse_window_compute()
+         Period multiplier constant: 0x1E0000 (ROM)
+      b) Read knock sensor voltage from ADC bank (A or B)
+      c) Compare max_knock_level vs detection_threshold (0x1680000)
+      d) IF threshold exceeded:
+         - Increment misfire counter via saturated_add_u16 (0x2460)
+           Counter @ 0xFFFFA564 (saturated at 0xFFFF)
+         - Calculate knock_margin (difference from threshold)
+         - Set retard_requirement flag @ 0xFFFFA570
+      e) IF no knock: Clear retard flags, maintain baseline
+    STEP 3: Cross-rotor comparison:
+      - Find maximum knock level across all rotors
+      - Evaluate knock margin for retard vs fuel cut decision
+    STEP 4: Control action:
+      IF knock_margin > 0: Apply ignition retard
+      IF knock_margin < 0 AND retard_active: Trigger fuel cut (0xFAEC)
+
+  Per-Rotor State Structure (base 0xFFFFA4B4, 0x58 bytes/rotor):
+    +0x00: Rotor ID
+    +0x02: Knock magnitude (s16)
+    +0x04: Knock margin (s32)
+    +0x08: Last knock level (u32)
+    +0x0C: Threshold (0x1680000)
+    +0x10: Status flags
+
+  Combustion Quality RAM (base 0xFFFFA800):
+    0xFFFFA800-0xFFFFA847: Rotor A state (72 bytes)
+    0xFFFFA848-0xFFFFA88F: Rotor B state (72 bytes)
+
+---
+
+V.2) COMBUSTION EFFICIENCY — combustion_efficiency_metric (0x121F0)
+----------------------------------------------------------------------
+  Size: 0x114 bytes (FPU-heavy calculation)
+
+  Inputs: MAF, fuel pulse width, O2 feedback, intake temp, MAP
+  Formula:
+    efficiency = (fuel_energy_potential - heat_losses) / fuel_energy_potential
+    heat_loss_factor = temperature_compensation × load_factor
+    catalyst_temp_est = base_temp + (efficiency_deficit × heat_factor)
+
+  RAM Outputs:
+    0xFFFFA5FC: Combustion efficiency (float)
+    0xFFFFA600: Load-adjusted efficiency (float)
+    0xFFFFA604: Temperature correction factor (float)
+    0xFFFFA608: Catalyst protection efficiency threshold (float)
+    0xFFFFA60C: MAF-based efficiency (float)
+    0xFFFFA610: Normalized efficiency (float)
+    0xFFFFA614: Secondary chamber efficiency (float)
+    0xFFFFA618: Exhaust temp estimate (float)
+    0xFFFFA61C: AFR correction factor (float)
+
+---
+
+V.3) CATALYST TEMPERATURE — combustion_chamber_temp (0x12938)
+----------------------------------------------------------------------
+  ⚠ PLAUSIBLE: Helper functions obscure exact calculation
+  Size: 0x110 bytes
+
+  Calculation factors: Exhaust gas temp from prev cycle, fuel injection qty,
+    ignition timing, manifold pressure, secondary chamber status
+
+  Output: 0xFFFFA658 (float, degrees Celsius)
+  State-dependent outputs:
+    State 0: Primary chamber temp (earliest spark)
+    State 1: Secondary chamber temp (trailing spark)
+    State 2: Average chamber temp
+    State 3: Peak chamber temp
+
+  Temperature Thresholds:
+    ⚠ INFERRED < 900°C:  Normal operation — Not directly confirmed in ROM bytes
+    ⚠ INFERRED 900-1000°C: Reduce fuel enrichment — Not directly confirmed in ROM bytes
+    ⚠ INFERRED > 1000°C: Aggressive fuel cut — Not directly confirmed in ROM bytes
+    ⚠ INFERRED > 1100°C: Emergency — ignition cut + DTC P0420 — Not directly confirmed in ROM bytes
+
+---
+
+V.4) COMBUSTION QUALITY STATE MACHINE — combustion_quality_monitor (0x1C690)
+----------------------------------------------------------------------
+  ⚠ PLAUSIBLE: FPU chain too complex to fully trace
+  Size: 0x206 bytes
+
+  Tracks per-rotor combustion quality via sensor fusion:
+    - Peak combustion pressure estimate
+    - Heat release rate
+    - Misfire via: abnormally low peak pressure, slow pressure rise,
+      early combustion termination, post-combustion oscillation
+
+  Catalyst protection trigger (at 0x1C75A):
+    IF efficiency < threshold: Initiate fuel cut
+    IF chamber_temp > safety_limit: Reduce injection
+    IF rotor_misfires > 5: Enable sequential monitoring
+    IF consecutive_misfires: Activate limp mode
+
+---
+
+V.5) MISFIRE THRESHOLD GATE — misfire_detection_check (0x23B62)
+----------------------------------------------------------------------
+  ⚠ CONFIDENCE: LOW — Disassembly shows this is a simple float threshold
+  comparison gate (fcmp/gt + flag set), NOT comprehensive misfire detection.
+  The progressive fuel reduction rates below are INFERRED from the broader
+  misfire subsystem, not directly verified in this specific function.
+
+  Threshold gate logic (verified):
+    Calls fpu_abs_float, compares result against ROM threshold
+    Sets flag at 0xFFFB400/0xFFFB404 based on comparison
+
+  Progressive fuel reduction (INFERRED from broader subsystem):
+    ⚠ INFERRED > 8 per 1000 events:  Reduce fuel 25% — Not directly verified in disassembly
+    ⚠ INFERRED > 16 per 1000 events: Reduce fuel 50% — Not directly verified in disassembly
+    ⚠ INFERRED > 25 per 1000 events: Reduce fuel 75% + MIL illumination — Not directly verified in disassembly
+
+---
+
+V.6) DTC CODES — MISFIRE & CATALYST
+----------------------------------------------------------------------
+  P0300: Random misfire (0xFFFFA896 or 0xFFFFA897 > threshold)
+  P0301: Rotor A leading misfire (0xFFFFA800 + 0x20)
+  P0302: Rotor A trailing misfire (0xFFFFA800 + 0x28)
+  P0303: Rotor B leading misfire (0xFFFFA848 + 0x20)
+  P0304: Rotor B trailing misfire (0xFFFFA848 + 0x28)
+  P0420: Catalyst efficiency below threshold (leading, from 0x1C690)
+  P0421: Catalyst efficiency below threshold (trailing)
+  P0430: Secondary rotor catalyst degradation (0xFFFFA848 + 0x58)
+
+  Thresholds:
+    Pending (no MIL): 4 misfires
+    Confirmed (MIL ON): 8 misfires
+    Clear: 0 for 100+ combustion cycles
+
+  Tuning Knobs:
+    0x1680000: Knock detection threshold (absolute voltage)
+    0x4ECE0: Knock sensor window timing map (256 bytes)
+    0x4ECC0: VVT mask for sensor bank selection (256 bytes)
+    0x1C75A: Combustion efficiency trigger threshold (ROM)
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================
+
+Revision: 5.0 (2026-04-05) — VERIFIED AGAINST DISASSEMBLY
+Based on IDA Pro disassembly of N3J1EL firmware (60E1D400.bin, 0x80000 bytes)
+SH7055 Big-Endian architecture, Renesas C compiler generated code
+
+Revision History:
+  v1.0: Initial pseudocode generated from parallel analysis agents
+  v2.0: Full verification against IDA disassembly. Corrections applied to:
+    - A.3: Fixed address typo (0xFFFFB5A4), corrected flag identification,
+            FR4 source corrected to 0xFFFFB618
+    - B.1: Fixed inverted sensor diagnostic logic, corrected knock path
+            selection (0xFFFFAA7A determines sqrt vs gain path), added
+            0xFFFFAA7A write-from-enable behavior, corrected ROM addresses
+    - C.2: Added missing 0xFFFFA38C gate check, corrected error source
+            addresses (0xFFFFA378/0xFFFFA326), fixed multiplier (×32 not ×20),
+            corrected closed-loop status flag logic
+    - D.1: Fixed RPM source (0xFFFF9EF8/0xFFFF9F80), added 2 missing
+            thresholds (Table_2D___226_+0x44 and +0x48)
+    - E.1: Fixed init condition (0xFFFFA8B8 not 0xFFFFA428), added missing
+            inputs (0xFFFFAA14, 0xFFFFB5B8), corrected VVT disabled path,
+            added crank-dependent mode split
+  v3.0: Added sections F-L (idle speed control, knock detection, fuel pump/OMP, cooling fan, VVT, DTC management, CAN bus). All new addresses verified against IDA disassembly. Total subsystems documented: 12 (was 5). Added 60+ new RAM addresses.
+  v3.1: Added G.2-G.7: Complete fuel enrichment/trim subsystem (cold start, WOT, acceleration, adaptive learning, priority arbiter, decel fuel cut)
+  v4.0: Added sections R (MAF Sensor Processing) and S (CAN Bus Communication).
+    Fixed lambda P-gain reference 0x6B8D4 as TABLE DESCRIPTOR. Fixed fuel cut
+    threshold 0x7A194 = 10000.0 RPM [CONFIRMED]. Added 7 new insights.
+    Total: 19 subsystems (A-S).
+  v5.0: Added sections T (EEPROM/Adaptive Learning), U (OBD-II/UDS Diagnostics),
+    V (Misfire Detection & Catalyst Protection). Integrated findings from
+    deep-dive analysis of eeprom_read_validate (0x450), calc_adaptive_fuel_trim
+    (0x1379C), diag_dispatcher (0x1479), security_access_sid27 (0x17D8),
+    knock_detection_processing (0xF770), combustion_efficiency_metric (0x121F0),
+    combustion_chamber_temp (0x12938), combustion_quality_monitor (0x1C690).
+    All ROM addresses verified via IDA MCP. Total: 22 subsystems (A-V).
+
+Key Insights:
+  1. Wankel dual-rotor asynchronous firing with per-rotor control primitives
+  2. Knock retard: sqrt path (previously disabled) vs multiplicative (previously enabled), selected by 0xFFFFAA7A
+  3. O2 feedback: per-rotor with ×32 threshold scaling (not ×20) at 0xFFFFA381
+  4. SSV: load-dependent hysteresis (not RPM), separate crank vs running modes
+  5. FPU pipeline: fmac/fsub/fmul/fdiv for all calculations; SH7055 native
+  6. Safety envelopes prevent catastrophic failures (min/max advance, PID bounds)
+  7. RAM address multiplexing: 0xFFFFA378 serves fuel cut duty and O2 reference (dual-purpose)
+  8. O2 closed-loop disable gate @ 0xFFFFA38C (WOT/cranking bypass)
+  9. ISC: 4-phase stepper with cold-start boost decaying over cycles, ramp limiter @ 0xFFFFA96C
+  10. DTC system: 6-gate pipeline, ALL gates must pass for any diagnostic
+  11. Security: seed-key with ROM 0x18C8-0x18DC verification bytes, secret "MazdA"
+  12. Adaptive trim: rotor-specific tables (0x6A868 nominal, 0x6A87C high-temp)
+  13. Catalyst protection: fuel cut only (never ignition cut — would coking)
+  14. Misfire escalation: pending (4 events), confirmed+MIL (8), progressive fuel reduction
+  15. Flash protected: 0x0000-0x1FFF (boot ROM/vector table)
+  16. Combustion efficiency: 9 RAM outputs (0xFFFFA5FC-0xFFFFA61C) feeding DTC P0420/P0430
+  17. EEPROM validation: 0x55/0xAA handshake at offset +8 of 256-byte mirror
+  18. CAN periodic: 300ms timeout (counter 0x12C), standard Mazda CAN IDs 0x201-0x650 (⚠ internal queue IDs 0xCA/0xDC are NOT CAN arbitration IDs)
+
+================================================================================

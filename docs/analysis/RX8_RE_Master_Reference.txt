@@ -197,7 +197,7 @@
 7. KNOCK DETECTION & CONTROL
 ================================================================================
 
-  Per-cylinder knock analysis with dual-pass state machine:
+  Per-channel knock analysis with dual-pass state machine:
 
   Pass 1: MEASURE           Pass 2: RESPOND
   ┌──────────────────┐      ┌──────────────────┐
@@ -228,7 +228,7 @@
 8. LAMBDA / CLOSED-LOOP O2 CONTROL
 ================================================================================
 
-  PI controller with per-cylinder trim:
+  PI controller with per-rotor trim:
 
   ┌─────────┐   ┌───────────┐   ┌───────────┐   ┌──────────┐
   │ O2      │──→│ P-term:   │──→│ I-term:   │──→│ Per-cyl  │
@@ -309,9 +309,21 @@
   Hardware: HCAN0 at 0xFFFF8000, 16 mailboxes, round-robin on 4 active
   Serial bridge: SCI1 synchronous mode, DMA channels 2 (TX) / 3 (RX)
 
-  Message IDs Discovered:
-    0xCA (202)  Engine Status — RPM, throttle, fuel status (10 Hz broadcast)
-    0xDC (220)  Sensor Data — temperature, O2 readings (event-triggered)
+  ⚠ CORRECTED (2026-04-05): Previously listed 0xCA/0xDC — those are internal
+  mailbox/queue identifiers, NOT actual CAN bus arbitration IDs.
+
+  Actual Mazda CAN IDs (confirmed via Ghidra cross-validation):
+  TX from ECU:
+    0x201  Engine RPM (bytes 0-1) + vehicle speed (4-5) + throttle (6) + status (7)
+    0x203  Engine status pack
+    0x215, 0x231, 0x240, 0x250, 0x251  TX data packs
+    0x420  MIL/check-engine lamp status
+    0x620, 0x630, 0x650  Additional TX packs
+    0x41   TX pack
+  RX to ECU:
+    0x212  RX main handler
+    0x216  RX with plausibility check + fault eval + timer
+    0x430, 0x47, 0x4B0, 0x4B1, 0x4C0  RX unpack handlers
 
   Key Functions:
     0xD6A0  hcan_init_and_status_check (HCAN0 initialization)
@@ -416,8 +428,8 @@
      Flash writing covers ENTIRE ROM (not just calibration area)
 
   3. LIVE DATA — CAN message definitions:
-     ID 0xCA: RPM, throttle, fuel status (10 Hz)
-     ID 0xDC: Sensor data (event-triggered)
+     ⚠ CORRECTED: 0xCA/0xDC were internal queue IDs, not CAN arb IDs.
+     Actual: 0x201 (RPM+speed+throttle), 0x203 (status), 0x420 (MIL), etc.
      OBD-II Mode $01 PIDs via standard CAN protocol
 
   4. SAFETY CONSTRAINTS from this RE work:

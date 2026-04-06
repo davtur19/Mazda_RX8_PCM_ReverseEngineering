@@ -53,7 +53,7 @@ MAJOR SUBSYSTEMS IDENTIFIED:
    - Spark advance calculation
    - Dwell time management
    - Coil output control
-   - Multi-cylinder timing coordination
+   - Multi-channel timing coordination
    - Knock retard logic
 
 7. INTAKE/EXHAUST PORT TIMING CONTROL (60+ functions)

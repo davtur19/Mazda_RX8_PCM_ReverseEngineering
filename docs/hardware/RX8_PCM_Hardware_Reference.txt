@@ -1,0 +1,64 @@
+================================================================
+  RX-8 S1 PCM — HARDWARE REFERENCE (Denso)
+================================================================
+
+  PCB P/N:      279721-3210
+  Supply:       12V automotive
+  Connector:    Single multi-row pin header (bottom edge)
+
+================================================================
+MAIN CPU — Renesas SH7055
+================================================================
+
+  Architecture: SH-2A, 32-bit RISC, big-endian
+  ROM:          512KB internal flash (0x00000000-0x0007FFFF)
+  RAM:          32KB (0xFFFF6000-0xFFFFDFFF)
+  Clock:        External crystal (X402)
+
+================================================================
+SECOND LARGE QFP — IC400
+================================================================
+
+  Separate large QFP IC with its own crystal (X430).
+  Likely the throttle-by-wire safety MCU (common Denso
+  architecture for drive-by-wire redundancy).
+  Communicates with SH7055 via GPIO lines, not CAN.
+  [UNCONFIRMED — chip marking not readable from photos]
+
+================================================================
+EEPROM — IC420
+================================================================
+
+  Likely ABLIC S-93C56C (256 bytes, SPI 3-wire).
+  Bit-banged via SH7055 GPIO (confirmed in firmware).
+  Contents: immobilizer keys, adaptive learned values.
+  [Chip type inferred from firmware behavior and community docs,
+   not visually confirmed on PCB]
+
+================================================================
+POWER DRIVERS
+================================================================
+
+  The following assignments are INFERRED from PCB position
+  and proximity to output stage components. Not confirmed
+  by trace-following or schematic.
+
+  IC520           Probable injector drivers (near T701-T704)
+  IC620, IC640    Probable ignition / solenoid drivers
+  IC730, IC780    Probable actuator drivers (ISC, OMP, SIV)
+  IC840, IC850    Probable relay drivers (fuel pump, fans)
+
+================================================================
+CAN BUS
+================================================================
+
+  HS-CAN:  OBD-II pins 6/14 — ECU diagnostics
+  MS-CAN:  OBD-II pins 3/11 — accessories (not used for ECU)
+
+================================================================
+MISC
+================================================================
+
+  SW480 "RST-OPEN"   Reset jumper pad (silkscreen confirmed)
+
+================================================================

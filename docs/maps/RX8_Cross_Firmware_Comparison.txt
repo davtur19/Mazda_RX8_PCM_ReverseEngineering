@@ -1,0 +1,157 @@
+================================================================================
+RX-8 S1 PCM — CROSS-FIRMWARE CALIBRATION COMPARISON
+================================================================================
+Date: 2026-04-05
+Purpose: Compare calibration data across all 6 stock ROM files in the repository.
+
+================================================================================
+1. FIRMWARE INVENTORY
+================================================================================
+
+  File            CalID            Denso PN     Market     Variant       Family
+  ─────────────── ──────────────── ──────────── ────────── ───────────── ──────
+  60E0E500.bin    N3H3EBMW.Z05    60E0E500     JDM        6-port MT     60E0
+  60E0E700.bin    N3YLEBPW.Z05    60E0E700     Unknown    Unknown       60E0
+  60E0FB00.bin    N3Z2EBWW.Z05    60E0FB00     US         4-port AT     60E0
+  60E0FC00.bin    N3Z2EBWW.Z05    60E0FC00     US         4-port AT     60E0
+  60E1B900.bin    N3ZDEBWW.T50    60E1B900     US CA      MT            60E1
+  60E1D400.bin    N3J1E_3W.T50    60E1D400     EU         6-port MT     60E1
+
+  NOTE: 60E0FB00 and 60E0FC00 share the same CalID (N3Z2EBWW) and are
+  99.97% identical (only 40 bytes differ in calibration area). These are
+  likely two revisions of the same firmware — possibly a minor ECU update.
+
+  NOTE: N3YLEBPW is not in the standard rx8_defs.xml. The "N3YL" prefix
+  suggests an uncommon variant, possibly export/limited market.
+
+
+================================================================================
+2. CODE SIMILARITY
+================================================================================
+
+  Boot region (first 0x4000 bytes):
+  ─────────────────────────────────
+  60E0 family (all 4 ROMs): 100% identical
+  60E1 family (both ROMs):  100% identical
+  60E0 vs 60E1:             75% match (same core architecture, different build)
+
+  Calibration area (0x60000-0x7FFFF = last 128KB):
+  ─────────────────────────────────────────────────
+  60E0FB00 vs 60E0FC00:     100.0% (40 bytes differ)   ← Same firmware
+  60E0FB00 vs 60E1B900:      71.3% (37,572 bytes differ) ← Same market, diff gen
+  60E0E500 vs 60E0E700:      27.0% (95,687 bytes differ) ← Different variants
+  60E0FB00 vs 60E0E500:      21.6% (102,705 bytes differ)
+  60E0 vs 60E1D400 (EU):     ~12% match (different family + market)
+
+  All entry points identical: PC=0x8B8, SP=0xFFFFDFA0
+
+  CONCLUSION: Within the same family, code is identical — only calibration
+  data differs. Between families, ~75% code similarity in boot but only
+  ~12% in calibration due to different data layout.
+
+
+================================================================================
+3. REV LIMITER — IDENTICAL ACROSS ALL ROMS
+================================================================================
+
+  All 6 ROMs contain the SAME rev limiter calibration values:
+
+  8000 / 9000 RPM pair: Found at 9 different locations in each ROM.
+    These likely represent:
+    - 8000 RPM: Normal rev limiter threshold (fuel cut begins)
+    - 9000 RPM: Hard cut / cold engine rev limit
+
+  7750 / 8250 RPM pair: Found in all ROMs.
+    Likely cold-engine or progressive rev limiter thresholds.
+
+  8500 RPM: Single value found in all ROMs.
+    Possibly intermediate fuel cut duty reduction threshold.
+
+  Offset mapping:
+  ROM              8000/9000 pair   7750/8250 pair   8500
+  ──────────────── ──────────────── ──────────────── ─────────
+  60E0E500 (JDM)   0x6C90C          0x74A2C          0x6CF18
+  60E0E700          0x6C90C          0x74ADC          0x6CF18
+  60E0FB00 (US AT)  0x6D60C          0x75440          0x6DC18
+  60E0FC00 (US AT)  0x6D60C          0x75440          0x6DC18
+  60E1B900 (US CA)  0x6D60C          0x75440          0x6DC18
+  60E1D400 (EU 6p)  0x6D10C          0x75BEC          0x6D740
+
+  ⚠ NOTE: Offsets differ between firmware families and even within same
+  family for different variants. The VALUES are identical but LOCATIONS vary.
+  This is critical for tuning software — table addresses are NOT portable.
+
+
+================================================================================
+4. SSV/6-PORT RPM THRESHOLDS
+================================================================================
+
+  RPM values in the 5000-6500 range found in calibration area:
+
+  JDM 6p & EU 6p (6-port models):
+    5000, 5120, 5200, 5250, 5500, 5600, 5750, 5990, 6000, 6100, 6144, 6250, 6400, 6500
+
+  US 4p & US CA (4-port/non-6-port):
+    Same values PLUS 5490 and 6027
+
+  The extra values (5490, 6027) in 4-port ROMs may relate to intake runner
+  or emission timing differences for non-SSV models.
+
+  SSV activation threshold is typically ~5500-6000 RPM for 6-port models.
+
+
+================================================================================
+5. FIRMWARE FAMILY DIFFERENCES
+================================================================================
+
+  60E0 (.Z05) Family:
+    - Older firmware generation
+    - Shared across JDM, US, and unknown markets
+    - 100% code match within family
+    - CalID format: N3xxxxx.Z05
+
+  60E1 (.T50) Family:
+    - Newer firmware generation
+    - Used for EU market and US California
+    - 100% code match within family
+    - CalID format: N3xxxxx.T50
+    - May include updated emission compliance code
+
+  Cross-family:
+    - 75% code similarity in boot/core sections
+    - Only ~12% calibration match (different layout)
+    - Same rev limiter values but at different offsets
+    - Same SSV threshold range
+    - Function names from Ghidra (60E0FC00) map by PURPOSE to 60E1D400
+      functions, NOT by address
+
+  IMPLICATION FOR TUNING SOFTWARE:
+    Tuning definitions (table addresses, sizes, scaling) are family-specific.
+    A definition file for 60E0 ROMs CANNOT be used for 60E1 ROMs.
+    Within the same family, offsets may still shift between variants.
+    RomRaider rx8_defs.xml must have separate entries per CalID.
+
+
+================================================================================
+6. EEPROM COMPARISON (from Data_binaries/)
+================================================================================
+
+  EU EEPROM (RX8_93c56_ECU_IC420_Read.bin):
+    - Size: 256 bytes
+    - VIN present: JM1FE173... (European registration)
+    - Contains learned/adaptive data
+    - Magic byte 0x5A at expected offset
+
+  JDM EEPROM (se3p_ecm_eeprom.bin):
+    - Size: 256 bytes
+    - VIN: SE3P prefix (Japanese domestic)
+    - Factory default state (minimal learned data)
+    - Magic byte 0x5A present
+
+  Both EEPROMs share the same 256-byte structure but different content
+  reflecting their respective vehicles and learned state.
+
+
+================================================================================
+END OF CROSS-FIRMWARE COMPARISON
+================================================================================

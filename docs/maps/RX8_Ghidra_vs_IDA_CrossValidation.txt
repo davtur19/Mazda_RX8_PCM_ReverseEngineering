@@ -1,0 +1,335 @@
+================================================================================
+MAZDA RX-8 S1 PCM — GHIDRA vs IDA CROSS-VALIDATION REPORT
+================================================================================
+Ghidra: 60E0FC00.bin (N3Z2EBWW, US 4-port AT, community tuner analysis)
+IDA:    60E1D400.bin (N3J1EL, EU 6-port MT, our analysis)
+Date:   2026-04-05
+
+NOTE: Different firmware versions (~7% code similarity). Function addresses
+DO NOT match. Comparison is by NAME, PURPOSE, and ARCHITECTURE only.
+The Ghidra analysis was done by an experienced tuner (equinox311) who tested
+with live RAM manipulation — his findings carry higher weight than our
+static-only analysis where discrepancies exist.
+================================================================================
+
+1. STATISTICS
+─────────────────────────────────────────────────────────────────────────────
+  Ghidra (60E0FC00):  3,459 functions total, ~500+ named by tuner
+  IDA (60E1D400):     2,789 functions total, ~2,789 named by AI
+
+  Community uses "?" and "??" suffixes to indicate uncertainty level.
+  Functions with no "?" have been validated via live testing.
+
+2. CONFIRMED MATCHES (Our analysis agrees with community)
+─────────────────────────────────────────────────────────────────────────────
+  ✓ Rev limiter uses FUEL CUT (not ignition cut)
+    Ghidra: calculateRevLimiterFuelCut, revLimitFuelCutInit
+    IDA: rev_limit_fuel_cut system in our pseudocode Section E
+    → CRITICAL for Wankel: ignition cut = unburned fuel → catalyst damage
+
+  ✓ Leading/Trailing spark plug architecture
+    Ghidra: calculateLeadingTimingBase, calculateTrailingTimingBase,
+            calculateLeadingTimingCompensations, calculateTrailingTimingDerateCompensated,
+            idleLeadingTimingCorrection, idleTrailingTimingCorrection,
+            setPerRotorTimingValuesLeading, setPerRotorTimingValuesTrailing
+    IDA: Our ignition system correctly identifies L/T split
+    → Both confirm per-rotor timing with separate leading/trailing paths
+
+  ✓ OMP (Oil Metering Pump) is multi-input system
+    Ghidra: calcOilMetering (decompiled) shows:
+            - 3D RPM-based table lookup
+            - Throttle-based injection
+            - IAT-based injection
+            - Manifold pressure-based injection
+            - Baro-based injection
+            - Engine start injection amount
+            - Off-throttle counter
+            - Vehicle speed timer
+            - Output capped at 60 (max duty)
+            - diagMeteringPumpPositionControl callback
+    IDA: Our OMP analysis captures the basic structure correctly
+    → Ghidra adds detail: baro compensation, IAT compensation, max=60
+
+  ✓ SSV (Secondary Shutter Valve) control with interrupt protection
+    Ghidra: getSSVControl wraps ssvControl with getSR(0x10)/setSR
+    IDA: Our SSV analysis matches (interrupt-safe actuator control)
+
+  ✓ Knock detection with per-rotor channels
+    Ghidra: 34 knock functions including getKnockSensorADC,
+            calculateKnockConditionA, detectKnockCondition,
+            calcKnockRAMUpdate, updateKnockMaxRAM,
+            saturateBetweenKnockRetardMinMaxTables
+    IDA: Our knock system analysis with 4 channels matches
+    → Both confirm knock retard min/max saturation, per-channel RAM update
+
+  ✓ Immobilizer system is extensive
+    Ghidra: 35+ Immo functions including ImmoMain, ImmoCalculateSeedResult,
+            ImmoGetSeed, ImmoKeyRXd, ImmoStateReadyToDriveEngineOff
+    IDA: Our EEPROM analysis correctly identifies immo subsystem
+
+  ✓ Catalyst temperature monitoring
+    Ghidra: calcEstimatedCatTemp, getCatTempConditional, getCatTempInRange,
+            setupLambdaForCatTempModel, coolantTempSubtractorsForCatModel
+    IDA: Our combustion_chamber_temp analysis is directionally correct
+    → Ghidra confirms it's a MODEL (calculated, not measured directly)
+
+  ✓ LTFT = Adaptive Fuel Trim
+    Ghidra: LTFTRelated, LTFTForCAN, getLTFTforOBD, initLTFTStuff
+    IDA: Our calc_adaptive_fuel_trim (0x1379C) = equivalent concept
+    → Industry standard terminology: LTFT = Long Term Fuel Trim
+
+  ✓ Mode22 = OBD ReadDataByIdentifier for datalogging
+    Ghidra: 22 Mode22 functions mapping PIDs to RAM variables:
+            Mode22GetRPM, getMode22EngineLoad, getMode22IAT,
+            getMode22ThrottlePos, getKnockRetardMode22,
+            getIgnitionTrailingMode22, getInjectorOnTimeMode22,
+            getMAFVoltageMode22, getDesiredIdleRPMMode22, etc.
+    IDA: Our UDS SID dispatch (Section U) confirmed
+
+  ✓ Fuel system architecture: open-loop + closed-loop + enrichments
+    Ghidra: calcOpenLoopFuelingTarget, CLFuelingRealted, OLFueling,
+            closedLoopFuelMassCalc, calcRearO2FuelTrim, fuelingStartupMultiplierStuff
+    IDA: Our fuel sections A-C match this architecture
+
+  ✓ Throttle control is complex with pedal→plate mapping
+    Ghidra: calculateThrottlePedalPercent, calculateThrottlePlateRequest,
+            filterThrottlePlatePosRequest, getThrottleControl
+    IDA: Our throttle/DBW analysis aligns
+
+3. ★ CORRECTIONS NEEDED IN OUR ANALYSIS
+─────────────────────────────────────────────────────────────────────────────
+
+  ★★★ CAN MESSAGE IDs — WRONG IN OUR DOCUMENTATION ★★★
+  ─────────────────────────────────────────────────────
+  WE CLAIMED:  0xCA (periodic 300ms, engine status) and 0xDC (event-driven, faults)
+  GHIDRA SHOWS: Standard Mazda CAN IDs (decimal-coded):
+    TX from ECU:
+      0x201 — Engine RPM (bytes 0-1) + vehicle speed (4-5) + throttle (6) + status (7)
+      0x203 — Engine status pack
+      0x215 — TX pack
+      0x231 — TX setup with getAndPack
+      0x240 — TX getAndPack
+      0x250 — TX getAndPack
+      0x251 — TX getAndPack
+      0x41  — TX pack
+      0x420 — TX getAndPack (MIL status for CAN confirmed)
+      0x620 — TX pack
+      0x630 — TX getAndPack
+      0x650 — TX getAndPack
+
+    RX to ECU:
+      0x212 — RX main handler
+      0x216 — RX with plausibility check, fault eval, timer
+      0x430 — RX unpack
+      0x47  — RX unpack
+      0x4B0 — RX main
+      0x4B1 — RX unpack
+      0x4C0 — RX main
+
+  VERDICT: Our 0xCA/0xDC claims were FABRICATED — no evidence in either
+  firmware. These IDs don't appear in the Ghidra analysis at all.
+  The actual Mazda CAN bus uses standard 11-bit IDs in the 0x200-0x650 range.
+  → MUST CORRECT in all documentation files.
+
+
+  ★★ DIAGNOSTIC SESSION CODE 0x85 — PARTIALLY CONFIRMED ★★
+  ───────────────────────────────────────────────────────────
+  Ghidra: setDiagMode85Bool, setDiagMode85Bool2, calculateDiagSessionConditional,
+          getDiagSessionSubFunction, securityNotUnlocked
+  → Session code 0x85 appears CONFIRMED by Ghidra function names.
+  → Sessions 0x81 and 0x87 still unverifiable.
+
+
+  ★ O2 SENSOR TERMINOLOGY — CLARIFICATION NEEDED ★
+  ─────────────────────────────────────────────────
+  Ghidra uses "Front O2" and "Rear O2" (pre-cat and post-cat sensors):
+    getFrontO2Voltage_fp, getRearO2FilteredValue, calcRearO2FuelTrim,
+    getRearO2FuelTrimMode22, convertRearO2VoltageForMode22
+  Our analysis uses generic "O2 feedback" and "lambda" terminology.
+  → Ghidra's naming is more precise: Rear O2 is the post-cat sensor
+    used for catalyst efficiency monitoring and LTFT feedback.
+
+
+  ★ OMP MAX VALUE = 60 — NEW DETAIL ★
+  ────────────────────────────────────
+  Ghidra decompilation shows: "if (60 < (uVar7 & 0xff)) { uVar7 = 60; }"
+  This means OMP duty cycle is capped at 60/255 = ~23.5% maximum.
+  Our OMP analysis didn't identify this hard cap.
+  → UPDATE OMP documentation with max=60 cap.
+
+
+  ★ "VVT" NAMING — POSSIBLY INCORRECT ★
+  ──────────────────────────────────────
+  Ghidra has NO functions named "VVT" (Variable Valve Timing).
+  The RX-8 Wankel has NO valves — there's nothing to vary.
+  What we called "VVT" might actually be:
+    - Intake runner length control (variable intake geometry)
+    - SSV (Secondary Shutter Valve) auxiliary control
+    - EGR (Exhaust Gas Recirculation) timing
+    - Unknown ECU output control
+  Ghidra's vvt_control_calc at 0x1C0FA (in Emissions section) suggests
+  it might be an emission-control related actuator, not actual VVT.
+  → MARK as ⚠ UNCERTAIN in our documentation. The RX-8 does NOT have VVT.
+
+
+4. INSIGHTS FROM GHIDRA NOT IN OUR ANALYSIS
+─────────────────────────────────────────────────────────────────────────────
+
+  4.1) FUEL CUT ARCHITECTURE — MUCH MORE COMPLEX THAN DOCUMENTED
+  ─────────────────────────────────────────────────────────────────
+  Ghidra reveals 30+ fuel cut functions with a CENTRAL ARBITRATOR:
+
+  arbitrateFuelCut (0xE2D8):
+    - OR's together 13+ independent fuel cut request flags
+    - Output is 2-bit per-rotor: bit 0 = rotor A cut, bit 1 = rotor B cut
+    - This means fuel cut can be applied to INDIVIDUAL ROTORS independently
+
+  Fuel cut sources identified:
+    1. Rev limiter: calculateRevLimiterFuelCut, revLimitFuelCutInit
+    2. Throttle lift-off: throttleLiftFuelCutSomething, throttleLiftCountersandConditions,
+       calculateOffThrottleORFuelCutTimer, driverOffThrottleSetPrevLoop,
+       throttleLiftInitStuff, throttleLiftoffRelated
+    3. DSC (traction control): arbitrateDSCFuelCut, dscPerRotorCut,
+       DSC_checkIfMode_x10/x20/x40/x80
+    4. Load-based: calculateFuelCutLoadBased
+    5. Vehicle speed + braking: vehicleSpeedAndBrakingFuelCut
+    6. Speed-based: speedBasedFuelCutSomething
+    7. Throttle plate: throttlePlateSomethingFuelCut
+    8. Per-rotor level 1: setPerRotorLevel1FuelCut, updateFuelCutPerRotorCalType
+    9. Plausibility: getPlausibilityFuelCutFuelResumeEnrichment
+    10. Condition-based: fuelCutCondtionRelated, evaluateFuelCutCondtionUnknown
+    11. Driver request: setFuelCutDriver
+    12. Timer after reset: fuelCutTimerAfterReset
+
+  perRotorFuelCut (0x21762):
+    - Wraps fuel cut in getSR/setSR (interrupt protection)
+    - Handles structure values 0, 6, 0xC, 0x12 (rotor timing events)
+    - Calls fuelCutArbitration, fuelCutSomethingSomething, dscPerRotorCut
+
+  → Our documentation only described rev limiter and decel fuel cut.
+    The actual system is vastly more complex with per-rotor granularity.
+
+  4.2) DSC (Dynamic Stability Control) — FULL TORQUE INTERVENTION
+  ────────────────────────────────────────────────────────────────
+  Ghidra: 14 DSC-related functions:
+    - calculateDSCLeadingTimingDerate: timing retard for leading plugs
+    - calculateDSCTrailingTimingDerate: timing retard for trailing plugs
+    - arbitrateDSCFuelCut: per-rotor fuel cut for traction control
+    - dscPerRotorCut: individual rotor fuel cut
+    - DSCThrottleStuff: throttle intervention
+    - dscDerateInit, dscMapSelectModex20, dscRelatedTiming
+    - DSC_checkIfMode_x10/x20/x40/x80: 4 DSC mode flag checks
+    - updateDSCRelatedCANStuff: CAN communication for DSC module
+  → Traction control uses THREE torque reduction methods simultaneously:
+    timing retard (both L and T), per-rotor fuel cut, and throttle reduction.
+
+  4.3) ALTERNATOR CONTROL — 15 FUNCTIONS
+  ───────────────────────────────────────
+  Ghidra: alternatorControlMain, alternatorControl, calculateOutputforAlternator,
+          calcDesiredAlternatorVoltage, getAlternatorFaultStatus,
+          getAlternatorSpeedConditonal, getVehicleConditionforAlternatorControl,
+          calculateAlternatorDiagDCOutput, diagAlternatorSignalthing,
+          alternatorPIDsomething, alternatorStuff, setAlternatorFault,
+          setAlternatorWarningLight, Mode22PIDAlternatorDC
+  → PID-controlled alternator voltage regulation with fault detection,
+    warning light control, and OBD Mode22 diagnostic PID.
+    Electrical load management affects idle stability.
+
+  4.4) CRUISE CONTROL — 22+ FUNCTIONS, TORQUE-BASED
+  ──────────────────────────────────────────────────
+  Ghidra: calculateCruiseControlProportionalTorque, calculateCruiseControlFFTorque,
+          calculateCruiseControlFinalTorque, calculateCruiseControlSpeedTarget,
+          calculateCruiseControlDriverRequest, calculateCruiseControlDisableCondition,
+          calculateCruiseControlSwitchVolt, cruiseControlMain, cruiseControlInit,
+          cruiseControlFunctions, cruiseControlStateStuff,
+          cruiseControlOvershootPlausibilityMon, cruiseControlUndershootingPlausibilityMon,
+          cruiseControlACCELRESAllowed, cruiseControlSetRealted,
+          cruiseControllAccelResCheck, debounceCruiseControlACCELRES/SET,
+          enableDisableCruiseControl, getCruiseControlAllowedBool,
+          getCruiseControlE2Metrics, getEvapPurgeMode22
+  → Full torque-based cruise control with proportional + feedforward torque,
+    speed target calculation, button debouncing, overshoot/undershoot monitoring,
+    and disable condition checking. Much more sophisticated than expected.
+
+  4.5) SECONDARY AIR PUMP — 10 FUNCTIONS
+  ───────────────────────────────────────
+  Ghidra: calculateSecondaryAirPumpEnirchment, getSecondaryAirPumpRequest,
+          calculateSecondaryAirOnTime, getSecondaryAirOnTimer,
+          diagCheckSecondaryAirRequest, secondaryAirRelated (×2),
+          secondaryAirRequestStuff, turnOnSecondaryAir,
+          getSecondaryAirPumpRequestForMode22
+  → Secondary air injection for cold-start emissions reduction.
+    Includes enrichment compensation, on-time calculation, diagnostic check,
+    and OBD Mode22 reporting. Standard emission control feature.
+
+  4.6) STAGED INJECTION — PRIMARY + SECONDARY INJECTORS
+  ─────────────────────────────────────────────────────
+  calcInjectorOnTime (0x313F0) decompilation reveals:
+    - Primary and secondary injector split algorithm
+    - Split based on fuel request vs. injector capacity limits
+    - Three operating modes:
+      a) Request < primary max: split proportionally
+      b) Request > total capacity: use latency-compensated split
+      c) Request > primary max but < total: secondary fills remainder
+    - Each injector path independently calculates on-time from cc/rev
+    - Divided by injector size calibration (flow rate) for time conversion
+    - First-order filter on injection time with saturation
+
+  4.7) MISFIRE DETECTION — MINIMAL IN GHIDRA
+  ──────────────────────────────────────────
+  Ghidra: Only 2 functions: misfireDetectInit (0xAB8A), lookupCodeTypeMisfire (0x5E296)
+  Our analysis documented extensive misfire escalation (pending/confirmed/MIL/progressive
+  fuel reduction at 25%/50%/75%).
+  → ⚠ Our misfire escalation details may be OVERSTATED. The Ghidra community
+    (with live testing) only identified 2 misfire functions. Our "progressive fuel
+    reduction" rates (25%/50%/75%) remain INFERRED and unverifiable.
+    The misfireDetectInit function is actually more of an O2 sensor init.
+
+  4.8) OTHER SUBSYSTEMS
+  ─────────────────────
+  • Tire size: getTireSizeMode22 — speed calculation compensation
+  • APV position: getApvPosMode22 — secondary air pump valve position for OBD
+  • EVAP purge: evapRelated (×2), filterEvapSomething, getEvapPurgeMode22
+  • Startup enrichment: derateEngineStartupEnrich, fuelingStartupMultiplierStuff,
+    getEngineStartupEnrichValue, setStartupInjectorPwMult, resetStartupEnrich
+  • No "boost", "limp", "safeMode", or "failsafe" functions found — confirms
+    NA engine with no explicit limp-home mode
+
+
+5. CONFIDENCE REASSESSMENT
+─────────────────────────────────────────────────────────────────────────────
+  Based on Ghidra cross-validation (updated 2026-04-05), confidence levels:
+
+  UPGRADED:
+    ✓ Rev limiter fuel cut          CONFIRMED → VERIFIED (Ghidra match)
+    ✓ Leading/Trailing architecture  CONFIRMED → VERIFIED (Ghidra match)
+    ✓ OMP multi-table system        CONFIRMED → VERIFIED (Ghidra decompile)
+    ✓ Session code 0x85             UNVERIFIABLE → PLAUSIBLE (Ghidra names)
+    ✓ Catalyst temp is MODELED      PLAUSIBLE → VERIFIED (Ghidra confirms model)
+    ✓ Staged injection (pri+sec)    CONFIRMED → VERIFIED (calcInjectorOnTime decompile)
+    ✓ Fuel cut uses fuel only       CONFIRMED → VERIFIED (never ignition cut)
+
+  DOWNGRADED:
+    ✗ CAN IDs 0xCA/0xDC            PLAUSIBLE → WRONG (corrected in all files)
+    ✗ "VVT" function naming         CONFIRMED → UNCERTAIN (no valves on Wankel)
+    ✗ Misfire escalation detail     CONFIRMED → OVERSTATED (only 2 Ghidra funcs)
+    ✗ Fuel cut as simple 2-path     CONFIRMED → INCOMPLETE (actually 13+ sources)
+
+  UNCHANGED:
+    ~ Security key "MazdA"          PLAUSIBLE (Ghidra has only securityNotUnlocked)
+    ~ Session codes 0x81/0x87       UNVERIFIABLE (only 0x85 found in Ghidra)
+    ~ EEPROM layout offsets         UNVERIFIABLE (no eeprom functions in Ghidra)
+
+  NEW INSIGHTS (not previously documented):
+    + Fuel cut central arbitrator with per-rotor granularity (2-bit output)
+    + DSC uses 3 simultaneous torque reduction methods
+    + 15-function alternator voltage regulation with PID control
+    + 22-function torque-based cruise control system
+    + 10-function secondary air pump emission control
+    + EVAP purge control subsystem
+    + No limp-home/failsafe mode explicitly named
+
+
+================================================================================
+END OF CROSS-VALIDATION REPORT
+================================================================================

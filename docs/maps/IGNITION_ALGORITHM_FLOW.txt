@@ -1,0 +1,700 @@
+================================================================================
+RX-8 S1 IGNITION TIMING ALGORITHM - FLOW DIAGRAMS & LOGIC TABLES
+================================================================================
+
+MAIN IGNITION TIMING CALCULATION FLOW (ignition_timing_calc_E7F8)
+==================================================================
+
+┌─────────────────────────────────────────────────────────────┐
+│ START: ignition_timing_calc_E7F8 @ 0xE7F8                   │
+│ Triggered: Every spark event (4 per 2-rotor cycle)          │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│ LOAD SYSTEM FLAGS & SCALARS (FPU context)                   │
+│ - knock_flag ← RAM[0xFFFFB5AA]                              │
+│ - knock_margin ← RAM[0xFFFFB5CC]        (FR14)              │
+│ - fuel_temp_adj ← RAM[0xFFFFBC1C]       (FR15)              │
+│ - load_scalar ← RAM[0xFFFFAA10]         (FR13)              │
+│ - idle_flag ← RAM[0xFFFFB5A4]                               │
+│ - safe_mode ← RAM[0xFFFFA4A1]                               │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+             ┌──────────────────────┐
+             │ SAFE MODE CHECK      │
+             │ safe_mode == 1 ?     │
+             └───┬──────────────┬───┘
+                 │              │
+              YES│              │NO
+                 │              │
+                 ▼              ▼
+           ┌────────────┐   ┌─────────────────────┐
+           │ Skip all   │   │ KNOCK FLAG CHECK    │
+           │ tables,    │   │ knock_flag == 1 ?   │
+           │ use fixed  │   │ OR knock_enable?    │
+           │ 2.0 deg    │   └───┬──────────────┬───┘
+           └────┬───────┘       │              │
+                │            NO │              │ YES
+                │               │              │
+                │               ▼              ▼
+                │    ┌──────────────────────┐  │
+                │    │ LOAD BASE TIMING     │  │
+                │    │ from ROM table       │  │
+                │    │ table_2d_interpolate │  │
+                │    │ Inputs:              │  │
+                │    │  - RPM @ 0xFFFFA424  │  │
+                │    │  - Load @ 0xFFFFAA10 │  │
+                │    │ Output: advance_sum  │  │
+                │    │ FR4 ← 0x6D096 data   │  │
+                │    └──────────┬───────────┘  │
+                │               │              │
+                │               ▼              │
+                │    ┌──────────────────────┐  │
+                │    │ BOUNDARY CHECK 1     │  │
+                │    │ advance_sum >        │  │
+                │    │ upper_limit(0x6D0A4)?│  │
+                │    └───┬──────────────┬───┘  │
+                │        │              │      │
+                │        │NO            │YES   │
+                │        │              │      │
+                │        ▼              ├──────┴─→ [Skip all]
+                │  ┌──────────────────┐ │
+                │  │ BOUNDARY CHECK 2 │ │
+                │  │ accel_enrichment │ │
+                │  │ > threshold?     │ │
+                │  └───┬──────────┬───┘ │
+                │      │NO        │YES  │
+                │      │          └─────┴──→ [Skip all]
+                │      │
+                │      ▼
+                │  ┌──────────────────────────┐
+                │  │ APPLY ADJUSTMENTS        │
+                │  │ 7 conditional factors:   │
+                │  └──────────────────────────┘
+                │      │
+                │      ▼
+                │  ┌──────────────────────┐
+                │  │ 5a) KNOCK CORRECTION │
+                │  │ IF knock_flag &&     │
+                │  │    knock_enable      │
+                │  │ THEN:                │
+                │  │ advance_sum -=       │
+                │  │   table[0x6D0B0]     │
+                │  └────────┬─────────────┘
+                │           │
+                │           ▼
+                │  ┌──────────────────────┐
+                │  │ 5b) EGR ADJUSTMENT   │
+                │  │ IF EGR_active        │
+                │  │    (0xFFFFCCE1==1)   │
+                │  │ THEN:                │
+                │  │ advance_sum -=       │
+                │  │   table[0x6D0B6]     │
+                │  └────────┬─────────────┘
+                │           │
+                │           ▼
+                │  ┌──────────────────────┐
+                │  │ 5c) VVT ADJUSTMENT   │
+                │  │ IF VVT_active        │
+                │  │    (0xFFFFB340==1)   │
+                │  │ THEN:                │
+                │  │ advance_sum +=       │
+                │  │   table[0x6D0BC]     │
+                │  └────────┬─────────────┘
+                │           │
+                │           ▼
+                │  ┌──────────────────────┐
+                │  │ 5d) FUEL DIAG CORR   │
+                │  │ IF fuel_diag_active  │
+                │  │    (0xFFFFA7C8==1)   │
+                │  │ THEN:                │
+                │  │ advance_sum +=       │
+                │  │   table[0x6D0E2]     │
+                │  └────────┬─────────────┘
+                │           │
+                │           ▼
+                │  ┌──────────────────────┐
+                │  │ 5e) BOOST CORRECTION │
+                │  │ IF boost_active      │
+                │  │    (0xFFFFC600==1)   │
+                │  │ THEN:                │
+                │  │ advance_sum -=       │
+                │  │   table[0x6D0C0]     │
+                │  │ [Always 0 on S1]     │
+                │  └────────┬─────────────┘
+                │           │
+                │           ▼
+                │  ┌──────────────────────┐
+                │  │ 5f) SAFETY MARGIN    │
+                │  │ IF knock_control_en  │
+                │  │    AND !margin_applied│
+                │  │ THEN:                │
+                │  │ advance_sum -=       │
+                │  │   table[0x6D0E8]     │
+                │  │ (1-3 deg buffer)     │
+                │  └────────┬─────────────┘
+                │           │
+                │           ▼
+                │  ┌──────────────────────┐
+                │  │ 5g) COLD START BOOST │
+                │  │ IF cold_start_flag   │
+                │  │ THEN:                │
+                │  │ advance_sum +=       │
+                │  │   table[0x6D0C6]     │
+                │  │ (decay over 10 sec)  │
+                │  └────────┬─────────────┘
+                │           │
+                └───────────┬──────────────────┐
+                            │                  │
+                            ▼                  ▼
+                  ┌──────────────────────┐    [Skip block]
+                  │ STORE LEADING TIMING │    │
+                  │ RAM[0xFFFFA458] =    │    │
+                  │   advance_sum        │    │
+                  └──────────┬───────────┘    │
+                             │                │
+                             ▼                │
+                  ┌──────────────────────┐    │
+                  │ TRAILING SYNTHESIS   │    │
+                  │ trailing = leading + │    │
+                  │   offset(0x6D0C4)    │    │
+                  │ Enforce ceiling at   │    │
+                  │   knock_margin       │    │
+                  │ RAM[0xFFFFA448] =    │    │
+                  │   trailing_timing    │    │
+                  └──────────┬───────────┘    │
+                             │                │
+                             ▼                │
+                  ┌──────────────────────┐    │
+                  │ KNOCK RETARD DIVISOR │    │
+                  │ IF knock_flag==1:    │    │
+                  │   Use divisor @      │    │
+                  │   loc_699BC          │    │
+                  │   (faster decay)     │    │
+                  │ ELSE:                │    │
+                  │   Use alternate @    │    │
+                  │   loc_699E4          │    │
+                  │   (slower recovery)  │    │
+                  │ Apply via FPU div    │    │
+                  └──────────┬───────────┘    │
+                             │                │
+                             ▼                │
+                  ┌──────────────────────┐    │
+                  │ DWELL CALCULATION    │    │
+                  │ IF !knock_flag:      │    │
+                  │   dwell = advance /  │    │
+                  │   divisor(699FE+2)   │    │
+                  │   RAM[0xFFFFA480]=   │    │
+                  │   dwell              │    │
+                  └──────────┬───────────┘    │
+                             │                │
+                             ▼                │
+                  ┌──────────────────────┐    │
+                  │ KNOCK COUNTER CHECK  │    │
+                  │ IF counter >         │    │
+                  │    threshold(0x6D0D4)│    │
+                  │    AND !knock_flag   │    │
+                  │ THEN:                │    │
+                  │   advance_sum =      │    │
+                  │   sqrt(advance) *    │    │
+                  │   cap(0x6D0D4+2)     │    │
+                  │   RAM[0xFFFFA44C]=   │    │
+                  │   advance_sum        │    │
+                  └──────────┬───────────┘    │
+                             │                │
+                             ├────────────────┘
+                             │
+                             ▼
+                  ┌──────────────────────┐
+                  │ RETURN                │
+                  │ Timing outputs ready  │
+                  │ for coil driver       │
+                  └──────────────────────┘
+
+
+KNOCK DETECTION LOOP (knock_detection_processing)
+===================================================
+
+┌────────────────────────────────────────────────┐
+│ START: knock_detection_processing @ 0xF770     │
+│ Triggered: Periodically (every ~2.5ms)         │
+└─────────────────────┬──────────────────────────┘
+                      │
+                      ▼
+        ┌─────────────────────────────┐
+        │ CHECK ENABLE FLAG           │
+        │ RAM[0xFFFFA571] == 1 ?       │
+        └───┬──────────────────┬───────┘
+            │                  │
+         YES│                  │NO
+            │                  │
+            ▼                  └──→ [Return early]
+┌──────────────────────────────┐
+│ INITIALIZE STRUCTURES         │
+│ FOR EACH CHANNEL (0-3):       │
+│  - Clear flags at 0xFFFFA4B4  │
+│  - Set threshold = 0x1680000  │
+│  - Load ROM tables:           │
+│    * 0x4ECE0 (timing lookup)  │
+│    * 0x4ECC0 (VVT mask)       │
+└────────────┬─────────────────┘
+             │
+             ▼
+┌──────────────────────────────────┐
+│ MAIN DETECTION LOOP              │
+│ FOR EACH CHANNEL (0-3):          │
+│ REPEAT UNTIL all_chans_processed │
+└────────────┬────────────────────┘
+             │
+             ▼
+     ┌──────────────────────┐
+     │ EXTRACT KNOCK PULSE  │
+     │ Call pulse_window_   │
+     │   compute()          │
+     │ Input: sensor data   │
+     │ Output: max_energy   │
+     └──────────┬───────────┘
+                │
+                ▼
+     ┌──────────────────────┐
+     │ COMPARE THRESHOLD    │
+     │ max_energy >         │
+     │ 0x1680000 ?          │
+     └───┬──────────────┬───┘
+         │              │
+      YES│              │NO
+         │              │
+         ▼              ▼
+    ┌────────────┐  ┌──────────────┐
+    │ KNOCK!     │  │ NO KNOCK     │
+    │            │  │              │
+    │ Increment: │  │ status = 2   │
+    │ counter@   │  │ margin = 0   │
+    │ 0xFFFFA564 │  │              │
+    │            │  │ continue     │
+    │ Calculate: │  │ next rotor   │
+    │ margin =   │  └──────────────┘
+    │ (threshold │
+    │  - actual) │
+    │ / 0xB40000 │
+    │            │
+    │ status = 1 │
+    │ retard_req │
+    │ = 1        │
+    └────┬───────┘
+         │
+         ▼
+    ┌────────────────────┐
+    │ UPDATE PHASE INFO  │
+    │ injector_phase =   │
+    │  RAM[0xFFFFA56D]   │
+    │ IF phase_changed:  │
+    │  lookup timing @   │
+    │  0x4ECE0           │
+    └────┬───────────────┘
+         │
+         ▼
+    ┌────────────────────┐
+    │ VVT INTERACTION    │
+    │ vvt_status =       │
+    │  RAM[0xFFFFA56E]   │
+    │ mask_lookup @      │
+    │  0x4ECC0           │
+    │ IF masked: mark    │
+    │ rotor affected     │
+    │ by VVT phase       │
+    └────┬───────────────┘
+         │
+         └─────────────┬──────────────
+                       │ [continue to
+                       │  next rotor]
+                       │
+                       ▼
+┌──────────────────────────────────┐
+│ RETARD DISPATCH                  │
+│ FOR EACH CHANNEL WITH retard_req │
+└────────────┬─────────────────────┘
+             │
+             ▼
+    ┌──────────────────┐
+    │ CHECK RETARD     │
+    │ STATUS           │
+    │ retard_applied==1│
+    └──┬──────────┬────┘
+       │          │
+     YES│          │NO
+       │          │
+       ▼          ▼
+   ┌────────┐  ┌────────────────┐
+   │ FUEL   │  │ APPLY RETARD   │
+   │ CUT    │  │                │
+   │ (2nd   │  │ Call knock     │
+   │ stage) │  │ retard divisor │
+   │        │  │ from loc_699BC │
+   │ Call:  │  │                │
+   │ fuel_  │  │ Apply via FPU  │
+   │ inject │  │ multiply/accum │
+   │        │  │                │
+   │ Mark:  │  │ Set:           │
+   │ retard │  │ retard_applied │
+   │ _appld │  │ = 1            │
+   │ = 1    │  │                │
+   └────────┘  └────────────────┘
+       │               │
+       └───────┬───────┘
+               │
+               ▼
+    ┌──────────────────────┐
+    │ Continue next ch     │
+    │ [loop back]          │
+    └──────────────────────┘
+
+
+TIMING ADJUSTMENT TRUTH TABLE
+==============================
+
+System State Combinations and Resulting Timing Adjustments:
+
+┌─────────────┬──────────┬──────────┬──────────┬──────────┬──────────┐
+│ Safe Mode   │ Knock    │ EGR      │ VVT      │ Fuel Dgn │ Cold St  │
+├─────────────┼──────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0=normal    │ 0=none   │ 0=off    │ 0=off    │ 0=off    │ 0=normal │
+│ 1=safe      │ 1=active │ 1=on     │ 1=on     │ 1=on     │ 1=cold   │
+├─────────────┼──────────┼──────────┼──────────┼──────────┼──────────┤
+
+Scenario 1: SAFE MODE ENABLED
+  0xFFFFA4A1=1 → force base_timing = 2.0 deg, skip all tables
+  Result: Extremely conservative regardless of load/RPM
+  Use case: Diagnostic mode, bench testing
+
+Scenario 2: NORMAL OPERATION, NO KNOCK
+  safe_mode=0, knock_active=0
+  → Load base table, apply all 7 adjustments
+  → No knock correction applied
+  → Full EGR/VVT/fuel diag/cold boost available
+  Result: Normal timing curve per ROM tables
+
+Scenario 3: KNOCK DETECTED, EGR ACTIVE
+  safe_mode=0, knock_active=1, EGR_active=1
+  → Load base table
+  → APPLY: knock_correction (0x6D0B0)
+  → APPLY: EGR_penalty (0x6D0B6)
+  → APPLY: knock_margin_floor (0x6D0E8)
+  → SKIP: VVT (not active), fuel_diag (assume off)
+  Result: Base - knock_corr - EGR_penalty - knock_margin
+
+Scenario 4: COLD START WITH VVT ACTIVE
+  safe_mode=0, knock_active=0, cold_start=1, VVT_active=1
+  → Load base table
+  → APPLY: cold_start_boost (0x6D0C6) [+2 to +8 deg]
+  → APPLY: VVT_adjustment (0x6D0BC) [+/- variable]
+  → SKIP: knock_correction, EGR_penalty (not active)
+  Result: Base + cold_boost + VVT_adj (enhanced warm-up)
+
+Scenario 5: FULL LOAD, ALL SYSTEMS ACTIVE
+  safe_mode=0, knock_active=1, EGR=1, VVT=1, fuel_diag=1, cold=0
+  → Load base table
+  → APPLY: knock_corr (neg)
+  → APPLY: EGR_penalty (neg)
+  → APPLY: VVT_adj (variable)
+  → APPLY: fuel_diag (variable)
+  → APPLY: knock_margin (neg)
+  → SKIP: cold_boost, boost_corr
+  Result: Base - knock - EGR + VVT + fuel_diag - margin
+          (Net typically retarded due to knock & EGR)
+
+Scenario 6: TURBO VARIANT (FUTURE RX-8R)
+  boost_active=1 (all other conditions as Scenario 2)
+  → Load base table
+  → APPLY: boost_correction (0x6D0C0) [-5 to -10 deg]
+  → Higher intake charge density requires significant retard
+  Result: Base - boost_penalty (increased load offset)
+
+
+KNOCK DETECTION SENSITIVITY MATRIX
+====================================
+
+Impact of key parameters on knock detection:
+
+┌──────────────────────────┬────────────┬──────────────────┐
+│ Parameter                │ Increase   │ Decrease         │
+├──────────────────────────┼────────────┼──────────────────┤
+│ Threshold (0x1680000)    │ Less sens  │ More sensitive   │
+│ (Higher = harder to knock│ (safe)     │ (aggressive)     │
+│                          │            │                  │
+│ Knock margin (0xFFFFB5CC)│ More retard│ Less retard      │
+│ (Added to prevent exceed)│ (conservative) │ (risk)      │
+│                          │            │                  │
+│ Knock correction (0x6D0B0)│More retard│ Less retard      │
+│ (Applied on detection)   │ (safe)     │ (aggressive)     │
+│                          │            │                  │
+│ Period multiplier        │ Frequency  │ Frequency        │
+│ (0x1E0000)              │ less smooth│ very smooth      │
+│ (RPM normalization)     │            │                  │
+│                          │            │                  │
+│ Knock counter threshold  │ Earlier    │ Later            │
+│ (0x6D0D4)               │ conservative│ aggressive      │
+│ (When to apply sqrt cap) │ cap        │ recovery         │
+└──────────────────────────┴────────────┴──────────────────┘
+
+RECOMMENDATION: Start with standard values. Decrease 0x1680000 only if
+stock engine consistently knocks under normal load. Increase only if
+trying to extract max power from race fuel (e.g., 100 octane).
+
+
+COIL DRIVER TIMING CALCULATION (ign_output_calc_main)
+======================================================
+
+┌───────────────────────────────────────────────┐
+│ START: ign_output_calc_main @ 0x884C          │
+│ Called by: Real-time spark scheduler          │
+│ Input param: coil_channel (0-3)               │
+└─────────────────┬─────────────────────────────┘
+                  │
+                  ▼
+        ┌─────────────────────────────┐
+        │ READ TIMING ADVANCE         │
+        │ IF coil_channel == LEADING: │
+        │   advance = 0xFFFFA458      │
+        │ ELSE:                       │
+        │   advance = 0xFFFFA448      │
+        │ (signed 16-bit)             │
+        └────────────┬────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────────┐
+        │ READ CRANK POSITION        │
+        │ current_angle =            │
+        │  ATUII_TCNT1A_W register   │
+        │ (hardware timer value)      │
+        └────────────┬────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────────┐
+        │ CALCULATE FIRE ANGLE       │
+        │ fire_angle =               │
+        │  current + advance         │
+        │ [Example: 5000 + 2000 @    │
+        │  0.01deg/unit = 25°]       │
+        └────────────┬────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────────┐
+        │ CHECK DWELL CONSTRAINT     │
+        │ time_until_fire =          │
+        │  fire_angle - current      │
+        │                            │
+        │ IF time < MIN_DWELL (e.g.  │
+        │    0x100 ≈ 1.5ms):         │
+        │  fire_angle = current +    │
+        │    MIN_DWELL               │
+        │ [Guarantees coil charging] │
+        └────────────┬────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────────┐
+        │ BOUNDS CHECK & CLAMP       │
+        │                            │
+        │ IF fire_angle > 0x8000:    │
+        │   fire_angle = 0x7FFF      │
+        │   (saturate positive)      │
+        │                            │
+        │ ELSE IF fire_angle < 0:    │
+        │   fire_angle = 0           │
+        │   (clamp negative to 0)    │
+        └────────────┬────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────────┐
+        │ PROGRAM HARDWARE TIMER     │
+        │                            │
+        │ write_synchronized(        │
+        │   coil_struct + 0x04,      │
+        │   fire_angle               │
+        │ )                          │
+        │                            │
+        │ [Atomic write to compare   │
+        │  register to prevent race] │
+        └────────────┬────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────────┐
+        │ ENABLE COIL OUTPUT         │
+        │                            │
+        │ dstr = read(ATUII_DSTR_W)  │
+        │ dstr |= coil_enable_mask   │
+        │ write(ATUII_DSTR_W, dstr)  │
+        │                            │
+        │ [Starts timer interrupt]   │
+        └────────────┬────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────────┐
+        │ RETURN                     │
+        │ Hardware will fire coil    │
+        │ when timer reaches         │
+        │ fire_angle value           │
+        └────────────────────────────┘
+
+
+INTERRUPT-DRIVEN TIMING EXECUTION
+==================================
+
+Timer Compare Match Interrupt (for each spark event):
+
+1. Timer reaches fire_angle value → interrupt triggered
+2. Hardware signals coil discharge (primary current OFF)
+3. Secondary winding generates high voltage (~30kV)
+4. Spark plug ignites air-fuel mixture in rotor housing
+5. Combustion pressure begins rising (peak at ~15° ATCA)
+6. Knock sensor picks up detonation waves (if any)
+7. Software processes knock signal in knock_detection_processing
+8. Knock retard applied to NEXT ignition event (feedback loop)
+
+
+TIMING CONTROL FEEDBACK LOOP
+=============================
+
+Event-by-event knock control:
+
+Spark Event N-1:
+  └─→ Spark fires @ calculated timing
+      └─→ Knock sensor detects peak energy
+          └─→ knock_detection_processing analyzes signal
+              └─→ Compares vs 0x1680000 threshold
+
+Spark Event N:
+  IF knock > threshold from N-1:
+    └─→ RAM[0xFFFFB5AA] ← 1 (knock_flag)
+        └─→ ignition_timing_calc_E7F8 reads flag
+            └─→ Applies knock_correction from 0x6D0B0
+                └─→ Timing RETARDS by 2-8 degrees
+                    └─→ Next spark fires later (margin restored)
+
+Spark Event N+1:
+  IF knock == 0 AND knock_counter > threshold:
+    └─→ Apply conservative cap (sqrt reduction)
+        └─→ Timing recovery blocked (prevents repeat knock)
+
+Spark Event N+2...N+K:
+  Gradual recovery via alternate divisor (loc_699E4)
+    └─→ Timing advances slowly (+0.1 deg/event)
+        └─→ Eventually returns to normal curve
+
+
+PSEUDOCODE ALGORITHMS
+=====================
+
+Algorithm 1: BASE TIMING INTERPOLATION
+```
+function get_base_timing():
+  rpm_index = RAM[0xFFFFA424]  // 0-99
+  load_scalar = RAM[0xFFFFAA10] // 0.0-1.0 float
+
+  // 2D table lookup
+  leading_timing = table_2d_interpolate(
+    table = 0x6D096,
+    x_axis = rpm_index,
+    y_axis = load_scalar
+  )
+
+  return leading_timing  // -10 to +50 degrees
+```
+
+Algorithm 2: KNOCK THRESHOLD COMPARISON
+```
+function detect_knock(rotor_index):
+  threshold = 0x1680000
+  period_mult = 0x1E0000
+
+  // Extract sensor pulse energy
+  knock_window = get_rotor_knock_window(rotor_index)
+  max_energy = pulse_window_compute(knock_window, period_mult)
+
+  // Compare vs threshold
+  if (max_energy > threshold):
+    // KNOCK DETECTED
+    margin = (threshold - max_energy) / 0xB40000
+    knock_counter = saturated_add_u16(knock_counter, 1)
+    return KNOCK_DETECTED, margin
+  else:
+    return NO_KNOCK, 0
+```
+
+Algorithm 3: FRACTIONAL RETARD DIVISOR
+```
+function apply_knock_divisor():
+  if (knock_active):
+    divisor = read_float(loc_699BC)  // ~0.85
+    retard_factor = divisor
+  else:
+    divisor = read_float(loc_699E4)  // ~0.98
+    retard_factor = divisor
+
+  // Apply: advance × divisor
+  advance_output = advance * retard_factor
+  return advance_output
+```
+
+Algorithm 4: DWELL TIME CONSTRAINT
+```
+function enforce_dwell():
+  MIN_DWELL = 0x100  // ~1.5 ms
+  MAX_DWELL = 0x400  // ~5.0 ms
+
+  current_angle = read_timer()
+  calculated_fire = current_angle + advance
+
+  time_until_fire = calculated_fire - current_angle
+
+  if (time_until_fire < MIN_DWELL):
+    calculated_fire = current_angle + MIN_DWELL
+    // Reduce advance to ensure charging time
+
+  return calculated_fire
+```
+
+Algorithm 5: CONSERVATIVE KNOCK CAP
+```
+function apply_conservative_cap():
+  counter = RAM[0xFFFFA496]
+  threshold = read_word(0x6D0D4)
+
+  if (counter > threshold AND knock_active == 0):
+    cap_scalar = read_float(0x6D0D4 + 2)
+    conservative_advance = sqrt(advance) * cap_scalar
+    return conservative_advance
+
+  return advance  // No cap needed
+```
+
+
+SATURATION ARITHMETIC USAGE
+=============================
+
+All counter increments use saturated_add_u16:
+
+```
+function saturated_add_u16(current, delta):
+  result = current + delta
+  if (result > 0xFFFF):
+    return 0xFFFF  // Saturate at max
+  else:
+    return result
+```
+
+WHY SATURATION?
+- Knock counter can increment every combustion event
+- If NOT saturated, would wrap (65535 → 0 → 1...)
+- Wrapping would lose knock event history
+- Saturated counter allows detection: counter == MAX = chronic knock
+
+Example: 63000 knock events over 10 hours
+  Without saturation: 63000 % 65536 = 63000 (looks like fresh)
+  With saturation: counter = 65535 (indicates chronic problem)
+
+
+END OF ALGORITHM FLOWS
+================================================================================

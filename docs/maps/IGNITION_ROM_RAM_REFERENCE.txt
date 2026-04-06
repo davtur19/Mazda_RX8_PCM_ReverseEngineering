@@ -1,0 +1,476 @@
+================================================================================
+RX-8 S1 IGNITION SYSTEM - ROM AND RAM REFERENCE TABLES
+================================================================================
+
+COMPLETE ROM ADDRESS MAP (Calibration Range: 0x6CE00 - 0x7E000)
+================================================================
+
+PRIMARY IGNITION TIMING TABLES
+------------------------------
+0x6D096      Leading Spark Advance Base Table
+             Type:    2D Float Array (RPM × Load)
+             Dimensions: 10 × 8 (RPM bins × load bins)
+             Range:   -10.0 to +50.0 degrees BTDC
+             Units:   Degrees crank angle (IEEE 754 single precision)
+             Axes:    RPM (500-8000 RPM), MAP (0-100 kPa normalized)
+             Used by: ignition_timing_calc_E7F8 (main timing path)
+             Access:  table_2d_interpolate called with rpm_index, load_scalar
+
+0x6DDD4      Trailing Spark Advance Base Table
+             Type:    2D Float Array (RPM × Load)
+             Dimensions: 10 × 8
+             Range:   40-80 degrees ATDC (after TDC, secondary rotor)
+             Purpose: Cleanup combustion, NOx reduction
+             Axes:    Same as leading
+             Synthesis: trailing_timing = leading_timing + offset_from_0x6D0C4
+
+KNOCK-RELATED TABLES
+--------------------
+0x1680000    Knock Threshold Constant (CRITICAL)
+             Type:    32-bit Unsigned Integer (multiplied value)
+             Current Value: 0x1680000 (23,592,960 in decimal)
+             Purpose: Sensitivity gate for knock detection
+             Meaning: Knock sensor peak energy must exceed this to trigger retard
+             Tuning Impact: HIGH
+             - Decrease → More sensitive (retards sooner, prevents detonation)
+             - Increase → Less sensitive (allows more timing, risk of knock)
+             Range:   Typical: 0x1000000 to 0x3000000
+             Formula: actual_threshold = base_threshold × (rpm_correction / period_multiplier)
+
+0x1E0000     Period Multiplier
+             Type:    32-bit Unsigned (frequency scaling)
+             Purpose: Normalizes knock sensor frequency vs engine RPM
+             Meaning: Converts timer ticks to frequency units
+             Uses: knock_detection_processing calculates: knock_window × 0x1E0000
+             Impact: Compensates for increasing knock frequency at high RPM
+
+0x6D0B0      Knock Correction Table
+             Type:    1D Float Array
+             Dimensions: 8 entries (load-indexed)
+             Range:   -2.0 to -8.0 degrees (retard penalty)
+             Purpose: How much to retard timing when knock is detected
+             Access:  Direct lookup using load_scalar as index
+             Typical values: [-2.0, -2.5, -3.0, -3.5, -4.0, -4.5, -5.0, -6.0]
+             Higher load = more aggressive retard (prevents high-load detonation)
+
+0x4ECE0      Timing Phase Lookup Table
+             Type:    8-bit LUT (phase → timing offset)
+             Dimensions: 256 entries
+             Purpose: Converts injection timing phase to ignition advance offset
+             Access:  table_lookup(0x4ECE0, injector_phase_byte)
+             Used by: knock_detection_processing for phase-aware detection
+
+0x4ECC0      VVT Mask Lookup Table
+             Type:    16-bit LUT (phase → bit mask)
+             Dimensions: 256 entries (2 bytes each)
+             Purpose: Determines which channels affected by VVT phase change
+             Access:  table_lookup(0x4ECC0, vvt_phase)
+             Interaction: knock detection only applies if channel not affected by VVT timing change
+
+CORRECTION FACTORS & ADJUSTMENTS
+---------------------------------
+0x6D0B2      Secondary EGR/VVT Fine Adjustment
+             Type:    1D Float Array (4-8 entries)
+             Range:   -0.5 to +1.0 degrees
+             Purpose: Precise timing offset for EGR/VVT interaction
+             Access:  Load-indexed lookup
+             Applied after main EGR penalty for fine-tuning
+
+0x6D0B6      EGR Penalty Table
+             Type:    1D Float Array
+             Dimensions: 8 entries (load-indexed)
+             Range:   -2.0 to -5.0 degrees (retard)
+             Purpose: Compensates for slower flame speed with exhaust recirculation
+             Typical: [-1.0, -1.5, -2.0, -2.5, -3.0, -3.5, -4.0, -5.0]
+             Gate:    Only applied if 0xFFFFCCE1 == 1 (EGR active)
+
+0x6D0BC      VVT Phase Adjustment Table
+             Type:    1D Float Array
+             Dimensions: 8 entries
+             Range:   -3.0 to +5.0 degrees
+             Purpose: Compensates for variable intake valve timing effect on combustion
+             Example: Early VVT phase = earlier flame arrival = retard needed
+             Gate:    Only applied if 0xFFFFB340 == 1 (VVT system active)
+
+0x6D0C0      Boost Pressure Correction Table
+             Type:    1D Float Array (pressure-indexed)
+             Dimensions: 12 entries (0-12 psi boost in 1 psi steps)
+             Range:   0 to -12.0 degrees (retard)
+             Purpose: Increased intake charge density requires retard
+             Gate:    0xFFFFC600 == 1 (currently always 0 on naturally aspirated RX-8)
+             Future:  Reserved for supercharged RX-8R variant
+
+0x6D0C4      Trailing Timing Offset & Ceiling
+             Type:    2D Table (RPM × Load)
+             Offset +0:  Trailing offset from leading (typically +50-60 degrees)
+             Offset +4:  Ceiling enforcement (don't exceed)
+             Offset +8:  Conservative cap for knock scenarios
+             Purpose: Ensures trailing timing doesn't exceed structural limits
+             Example: If leading = 20 deg BTDC, trailing = 20 + offset = ~70 ATDC
+             Gate:    Enforced if knock_margin > trailing_offset
+
+0x6D0C6      Cold Start Advance Boost Table
+             Type:    1D Float Array (time-indexed)
+             Dimensions: 10 entries (0-10 seconds post-start)
+             Range:   0 to +8.0 degrees (advance)
+             Purpose: Extra advance during warm-up enrichment phase
+             Typical:  [+8.0, +8.0, +7.0, +6.0, +5.0, +4.0, +2.0, 0, 0, 0]
+             Decay:    Quadratic decay (rapid in first 3 sec, then slow)
+             Gate:    cold_start_flag (tracked by engine startup detector)
+
+0x6D0D4      Knock Counter Threshold & Conservative Cap
+             Type:    2-word structure
+             Offset +0:  Knock counter threshold (saturated value at which caution activated)
+             Offset +2:  Conservative cap scalar (sqrt-limited retard)
+             Example:    Threshold=10 (if knock_counter > 10, apply conservative)
+             Purpose:    Prevents cascade detonation when knock counter high
+             Logic:      If knock_counter > threshold AND no current knock:
+                         advance_sum = sqrt(advance_sum) * cap_scalar
+
+0x6D0E2      Fuel Mixture Feedback Correction
+             Type:    1D Float Array (AFR-indexed)
+             Dimensions: 16 entries (12:1 to 18:1 AFR in 0.375:1 steps)
+             Range:   -1.5 to +2.0 degrees
+             Purpose: Compensates for combustion speed variation with air-fuel ratio
+             Strategy: Lean mixture (slow burn) = advance, Rich mixture (fast burn) = retard
+             Gate:    0xFFFFA7C8 == 1 (fuel diagnostics running)
+
+0x6D0E8      Knock Safety Margin Floor
+             Type:    Float scalar
+             Value:   Typically 1.0 to 3.0 degrees
+             Purpose: Always-on conservative offset prevents first-knock scenarios
+             Applied:   When knock_control_enable == 1 AND margin not recently applied
+             Logic:     advance_sum -= margin_value (permanent conservative buffer)
+
+INTERPOLATION COEFFICIENTS & HELPERS
+-------------------------------------
+0x699BC      Knock Retard Divisor (Fractional Reduction)
+             Type:    Float scalar
+             Range:   0.75 to 0.95 (75%-95% of advance)
+             Meaning:  Multiply advance by this value when knock detected
+             Example:  advance=20, divisor=0.85 → output=17 (3-degree retard)
+             Used by: fpu_multiply_accumulate called from E7F8:EA2C
+
+0x699E4      Knock Recovery Divisor (Slower Rate)
+             Type:    Float scalar
+             Range:   0.98 to 1.00 (98%-100% recovery)
+             Meaning:  Used when NO knock detected (recovery phase)
+             Strategy: Asymmetric retard/recovery rates (retard fast, recover slow)
+             Example:  If knock was 5 deg retard, recover +0.1 deg per cycle
+
+0x699FE+2    Dwell Time Divisor
+             Type:    Float scalar
+             Range:   5.0 to 15.0
+             Purpose: Determines primary coil charging time (ON duration)
+             Formula:  dwell_time = advance / divisor
+             Example:  advance=30 deg, divisor=10 → dwell=3ms
+
+LIMITS & BOUNDARIES
+-------------------
+0x6D0A4      Upper Timing Boundary (Maximum Safe Advance)
+             Type:    Float
+             Typical: 45.0 degrees BTDC
+             Purpose: Prevents structural damage to engine (rotor tip seal clearance)
+             Gate:    Checked early in ignition_timing_calc_E7F8
+             Enforcement: Hard ceiling (if violated, skip rest of calculation)
+
+0x6D0A6+2    Lower Timing Boundary (Minimum Advance)
+             Type:    Float
+             Typical: 5.0 to 10.0 degrees BTDC
+             Purpose: Ensures sufficient ignition window at idle
+             If violated: Timing automatically clamped to this minimum
+             Idle stability: Critical for smooth idle and low emissions
+
+0x6D0A4+4    Acceleration Enrichment Threshold
+             Type:    Float (load scalar threshold)
+             Range:   0.5 to 0.9 (normalized load)
+             Purpose: When load scalar exceeds this, inhibit further advance
+             Prevents: Detonation during WOT ramp (high transient load)
+
+================================================================================
+COMPLETE RAM ADDRESS MAP (0xFFFF6000 - 0xFFFFDFFF)
+================================================================
+
+IGNITION TIMING OUTPUTS
+-----------------------
+0xFFFFA458   Leading Spark Advance Output (2 bytes, signed)
+             Format:   16-bit signed integer
+             Range:    -32768 to +32767 (typical: -10 to +60 degrees)
+             Units:    1 unit = 0.01 degrees crank angle
+             Meaning:  "Advance this many degrees before nominal TDC"
+             Updated:  Every combustion event by ignition_timing_calc_E7F8
+             Read by:  ign_output_calc_main (0x884C) to drive coil timing
+
+0xFFFFA448   Trailing Spark Advance Output (2 bytes, signed)
+             Format:   16-bit signed integer
+             Range:    -32768 to +32767 (typical: 40-80 degrees ATDC)
+             Units:    Same as leading (0.01 degrees/unit)
+             Purpose:  Separate coil trigger for trailing spark plug (Wankel unique)
+             Computed: trailing = leading + offset_from_0x6D0C4
+             Logic:    Enforces ceiling at 0xFFFFB5CC (knock margin)
+
+0xFFFFA45C   Dwell Time Adjustment (4 bytes, float)
+             Format:   IEEE 754 single precision
+             Range:    1.0 to 5.0 milliseconds
+             Purpose:  Primary coil charging duration before spark discharge
+             Constraint: Minimum 1.5ms (insufficient charging at low current)
+             Constraint: Maximum 5.0ms (thermal limit of primary resistor)
+             Computed:  dwell = advance / dwell_divisor_from_699FE
+
+0xFFFFA496   Knock Counter (2 bytes, unsigned saturated)
+             Format:   16-bit unsigned (saturates at 65535)
+             Range:    0 to 65535
+             Increment: saturated_add_u16(current, 1) when knock threshold exceeded
+             Reset:    Decrements per cycle when knock not detected (recovery)
+             Purpose:  Tracks total knock event frequency
+             Monitor:  If counter > threshold (0x6D0D4), apply conservative cap
+
+KNOCK DETECTION & CONTROL
+--------------------------
+0xFFFFB5AA   Knock Flag (1 byte, boolean)
+             Value:    0 = no knock, 1 = knock detected this cycle
+             Scope:    Current combustion event
+             Updated:  By knock_detection_processing (0xF770)
+             Impact:   Gates knock correction table application
+             Logic:    If set, advance_sum -= knock_correction_from_0x6D0B0
+
+0xFFFFB5AC   Knock Enable Gate (1 byte, boolean)
+             Value:    0 = knock control disabled, 1 = knock control active
+             Scope:    Global knock control system
+             Updated:  By calc_knock_control_enable
+             Purpose:  Software gate to disable all knock retard (diagnostics, safety)
+             Impact:   If 0, ignores 0xFFFFB5AA even if set
+
+0xFFFFB5B8   Acceleration Enrichment Scalar (4 bytes, float)
+             Format:   IEEE 754 single precision
+             Range:    0.0 to 1.0 (normalized load rate-of-change)
+             Meaning:  0.0 = steady state, 1.0 = maximum throttle ramp
+             Updated:  By fuel_control_output_task (calculates dThrottle/dt)
+             Impact:   Gates advance when > threshold from 0x6D0A6+4
+             Purpose:  Prevents detonation during transient WOT ramp
+
+0xFFFFB5CC   Knock Retard Margin (4 bytes, float)
+             Format:   IEEE 754 single precision
+             Range:    0.0 to 10.0 degrees
+             Meaning:  Calculated margin between current knock level and threshold
+             Updated:  By knock_detection_processing after threshold comparison
+             Impact:   Used to determine retard magnitude (larger margin = less retard)
+             Storage:  Stored in per-rotor structure at 0xFFFFA4B4
+
+0xFFFFB5A4   Idle Flag (1 byte, boolean)
+             Value:    0 = engine not at idle, 1 = engine at idle RPM
+             Threshold: RPM < 800
+             Updated:  By engine speed monitoring task
+             Impact:   Selects idle timing table (more retarded for stability)
+             Purpose:  Idle timing separate from cruise for fuel economy
+
+0xFFFFBC1C   Fuel Temperature Adjustment (4 bytes, float)
+             Format:   IEEE 754 single precision
+             Range:    -2.0 to +2.0 degrees
+             Meaning:  Correction based on fuel temperature sensor
+             Cold fuel (5°C): -2.0 (retard, slower burn)
+             Hot fuel (50°C):  +2.0 (advance, faster burn)
+             Updated:  Every 100ms by fuel pump thermal controller
+             Logic:    Applied additively to advance_sum in E7F8:EA1A
+
+SYSTEM MODE FLAGS & GATES
+--------------------------
+0xFFFFA4A1   Safe Mode Flag (1 byte, boolean)
+             Value:    0 = normal operation, 1 = safe/diagnostic mode
+             Threshold: Triggered by test pin or diagnostic commands
+             Impact:   Forces timing to fixed 2.0 degrees (very conservative)
+             Purpose:  Prevents damage during bench testing or diagnostic mode
+             Override: Super-gate (highest priority, overrides knock control)
+
+0xFFFFAA10   Load Scalar (4 bytes, float, normalized 0.0-1.0)
+             Formula:  (actual_MAP - min_MAP) / (max_MAP - min_MAP)
+             Range:    0.0 (idle/off-throttle) to 1.0 (wide-open throttle)
+             Updated:  Every 10ms by intake_pressure_sub_task_23EB8
+             Units:    Normalized dimensionless (not absolute pressure)
+             Impact:   X-axis index for 2D timing table lookups
+             Example:  0.5 load = 50 kPa MAP at sea level
+
+0xFFFFA424   RPM Interpolation Index (2 bytes, unsigned)
+             Format:   Fixed-point or direct table index
+             Range:    0-99 (100 RPM bins)
+             Mapping:  0 = 500 RPM, 99 = 8000+ RPM
+             Updated:  Every 10ms by crank speed estimator
+             Units:    Dimensionless index (not actual RPM)
+             Impact:   Y-axis index for 2D timing table lookups
+
+0xFFFFB340   VVT System Active Flag (1 byte, boolean)
+             Value:    0 = VVT off, 1 = VVT engaged
+             Updated:  By VVT solenoid driver task
+             Impact:   Gates VVT adjustment application (0x6D0BC)
+             Logic:    If 1, apply: advance_sum += vvt_adjustment_from_0x6D0BC
+
+0xFFFFCCE1   EGR Active Flag (1 byte, boolean)
+             Value:    0 = EGR valve closed, 1 = EGR valve open
+             Updated:  By exhaust system control task
+             Impact:   Gates EGR penalty application (0x6D0B6)
+             Logic:    If 1, apply: advance_sum -= egr_penalty_from_0x6D0B6
+
+0xFFFFA7C8   Fuel Diagnostics Running Flag (1 byte, boolean)
+             Value:    0 = O2 sensor diag off, 1 = diag active
+             Updated:  By OBD fault detection task
+             Impact:   Gates fuel mixture correction (0x6D0E2)
+             Purpose:  Only apply AFR correction during diagnostic window
+
+0xFFFFBB38   Knock Control Enable (1 byte, boolean)
+             Value:    0 = knock control disabled, 1 = knock control active
+             Updated:  Manually by diagnostics or DTC handler
+             Impact:   Global gating for all knock retard logic
+             Override: Higher priority than knock_active flag (0xFFFFB5AA)
+
+0xFFFFC600   Boost/Supercharger Flag (1 byte, boolean)
+             Value:    0 = naturally aspirated, 1 = supercharger active
+             Purpose:  Gates boost pressure correction (0x6D0C0)
+             Status:   Always 0 on stock RX-8 S1
+             Future:   Used on RX-8R with supercharger variant
+
+PER-CHANNEL KNOCK DETECTION STRUCTURE
+--------------------------------------
+Base Address: 0xFFFFA4B4 (4 channels × 0x58 bytes/channel)
+              Channel 0 (Leading Rotor A): 0xFFFFA4B4 to 0xFFFFA50B
+              Channel 1 (Trailing Rotor A): 0xFFFFA50C to 0xFFFFA563
+              Channel 2 (Leading Rotor B): 0xFFFFA564 to 0xFFFFA5BB
+              Channel 3 (Trailing Rotor B): 0xFFFFA5BC to 0xFFFFA613
+
+STRUCTURE LAYOUT (0x58 bytes):
+Offset  Size  Field                   Description
+------  ----  -----                   -----------
++0x00   1     channel_index           Which channel (0-3): 0=Leading A, 1=Trailing A, 2=Leading B, 3=Trailing B
++0x01   1     timing_phase            Current phase index
++0x02   1     knock_status            0=clear, 1=margin_exceeded, 2=no_knock
++0x03   1     retard_applied          Has retard been applied? (boolean)
++0x04   2     knock_margin            Difference: threshold - actual_level
++0x06   1     vvt_phase_mask          Which channels affected by VVT
++0x07   1     previous_state          Hysteresis tracker
++0x08   4     knock_window_ptr        Pointer to sensor pulse data
++0x0C   4     knock_threshold         0x1680000 (default sensitivity)
++0x10   4     max_knock_level         Peak magnitude in sensor window
++0x14   1     margin_calc_result      Final margin computation
++0x15   1     status_byte             Internal state tracker
++0x16   2     RESERVED
++0x18-0x57    PADDING/FUTURE USE      (rest of 0x58 bytes)
+
+GLOBAL KNOCK TRACKING
+0xFFFFA571   Knock Detection Enabled (hardware gate, 1 byte boolean)
+             Value:    0 = disabled, 1 = enabled
+             Set by:   knock_sensor_self_test or hardware controller
+             Impact:   If 0, entire knock_detection_processing returns early
+
+0xFFFFA56D   Current Injector Timing Phase (1 byte)
+             Range:    0-255 (phase index into timing lookup table)
+             Updated:  Every combustion event by injection_timing_calculator
+             Used by:  knock_detection_processing for phase-aware thresholds
+             Logic:    Determines which knock window to analyze
+
+0xFFFFA56E   VVT Solenoid Status (2 bytes, bit mask)
+             Format:   16-bit status word (one bit per solenoid state)
+             Updated:  Every 10ms by VVT driver task
+             Interaction: AND'ed with lookup result from 0x4ECC0 to determine
+                        if knock detection applies to current phase
+
+0xFFFFA564   Global Knock Counter (2 bytes, saturated unsigned)
+             Range:    0 to 65535 (saturates, doesn't wrap)
+             Update:   Incremented by saturated_add_u16 when threshold exceeded
+             Monitor:  Compared against threshold at 0x6D0D4
+             Recovery: Decrements slowly per cycle when no knock detected
+             Purpose:  Cumulative knock event frequency tracker
+
+MISCELLANEOUS CONTROL VARIABLES
+--------------------------------
+0xFFFFA41C   Acceleration Control Enable (1 byte)
+             Purpose:  Gates acceleration enrichment advance limiting
+             Impact:   If set, prevents new advances during throttle ramp
+
+0xFFFFA416   Advance Counter (2 bytes, unsigned)
+             Format:   16-bit
+             Purpose:  Tracks cumulative advance applications
+             Limit:    Compared vs threshold at Table_2D___331+h'34
+             Logic:    If counter >= threshold, inhibit further advance
+
+0xFFFFA418   Safe Timing Output (1 byte)
+             Purpose:  Default safe advance when safe mode active
+             Value:    Typically 2 degrees BTDC
+             Set by:   ignition_advance_limiter (0xE38C)
+
+0xFFFFA42C   Safe Mode Check (1 byte)
+             Same as:  0xFFFFA4A1 (aliased for redundancy)
+             Purpose:  Redundant safe mode gate for fault tolerance
+
+RELATED TASK CONTROL
+--------------------
+0xFFFFDF70   Diagnostic state register array (multiple offsets)
+             Purpose:  Fault detection and self-test flags
+             Related:  Various diagnostic task gates throughout firmware
+
+0xFFFFBFA4   Test/Diagnostic Pin Status (1 byte)
+             Purpose:  Reads external test connector pin
+             Impact:   If pin pulled to ground, enables diagnostic mode
+             Result:   Triggers safe_mode flag (0xFFFFA4A1)
+
+================================================================================
+DEBUG & ANALYSIS TECHNIQUES
+================================================================
+
+MONITORING RUNTIME TIMING VALUES
+---------------------------------
+To observe real-time ignition timing:
+
+1. Read computed advance:
+   Leading:  0xFFFFA458 (16-bit signed) ÷ 100 = degrees BTDC
+   Trailing: 0xFFFFA448 (16-bit signed) ÷ 100 = degrees ATDC
+   Example:  0xFFFFA458 = 2000 → 20.00 degrees BTDC leading
+
+2. Read knock activity:
+   Knock flag:   0xFFFFB5AA (0=none, 1=active)
+   Knock count:  0xFFFFA496 (saturated total)
+   Example:      If count increases, knock events detected
+
+3. Read system mode:
+   Safe mode:    0xFFFFA4A1 (0=normal, 1=safe)
+   Load:         0xFFFFAA10 (IEEE float 0.0-1.0)
+   EGR:          0xFFFFCCE1 (0=off, 1=on)
+   VVT:          0xFFFFB340 (0=off, 1=on)
+
+TRACING ROM TABLE ACCESS
+------------------------
+To identify which ROM table is being used:
+
+1. Set breakpoint at table_2d_interpolate (0x9668)
+   Check r4 (input: table address)
+   Check r0 (output: interpolated value)
+
+2. Log progression through ignition_timing_calc_E7F8:
+   Breakpoint at 0xE7F8 (entry)
+   Breakpoint at 0xE906 (RPM interpolation call)
+   Breakpoint at 0xE91A (store load-scaled result)
+   Breakpoint at 0xEA1A (store trailing synthesis)
+   Breakpoint at 0xEB5A (return)
+
+3. Identify knock correction application:
+   Breakpoint at 0xE97C-0xEA00 (conditional knock blocks)
+   Check r11 value (boolean: 1=knock correction applied)
+
+VALIDATION CHECKSUMS
+--------------------
+ROM table integrity can be verified:
+
+1. Leading timing table (0x6D096):
+   Typical: All values positive (no BTDC retard in base table)
+   Increasing with RPM at constant load
+   Decreasing with load at constant RPM
+
+2. Knock tables (0x1680000):
+   Should remain constant unless tuned
+   Reference value: 0x1680000 = 23,592,960 decimal
+
+3. Boundary tables (0x6D0A4, 0x6D0A6+2):
+   Upper boundary > lower boundary (sanity check)
+   Typical spread: 35-45 degrees BTDC upper, 5-10 degrees BTDC lower
+
+================================================================================
+END OF REFERENCE
+================================================================================

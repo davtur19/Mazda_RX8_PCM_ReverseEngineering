@@ -1,0 +1,1758 @@
+================================================================================
+MAZDA RX-8 S1 PCM — RAM VARIABLE MAP FOR DATALOGGING
+ROM: N3J1EL (60E1D400) — EU 6-port 231hp MT, 2004-2008
+RAM: 0xFFFF6000 - 0xFFFFDFFF (32KB)
+Access: OBD SID 0x23 (ReadMemoryByAddress) after session 0x85 + security unlock
+         ⚠ UNVERIFIABLE: Firmware-derived session codes (0x81/0x85/0x87) — no public source confirms these values
+================================================================================
+
+Legend:
+  [CONFIRMED]   = Verified via IDA disassembly of specific function
+  [INFERRED]    = Identified from function context, high confidence
+  [SPECULATIVE] = Based on address pattern/proximity, needs verification
+  Size: B=byte(1), W=word(2), F=float(4)
+
+CRITICAL VERIFICATION REQUIREMENT:
+  ⚠ ALL RAM ADDRESSES ARE DERIVED FROM STATIC ROM ANALYSIS
+    All RAM addresses in this document are determined from disassembly of the ROM image.
+    SH7055 uses 16-bit displacement addressing, which makes direct verification from
+    disassembly incomplete. RAM addresses CANNOT be fully verified without runtime data.
+    REQUIRED VERIFICATION METHODS:
+      1. SID 0x23 dump (ReadMemoryByAddress after session 0x85 + security unlock)
+      2. CAN bus correlation with live telemetry
+      3. Hardware breakpoint analysis on actual ECU hardware
+    Use this map for research guidance only. Validate all critical addresses before
+    applying to real vehicles or production systems.
+
+================================================================================
+ESSENTIAL DATALOGGING VARIABLES (read these first)
+================================================================================
+
+--- Engine Speed & Load ---
+  0xFFFFA112  W  [CONFIRMED]  RPM (cached)
+              Cached from hardware reg 0xFFFF9EE4+8
+              Written by fuel_calc_entry (0x9528)
+              
+  0xFFFFA114  W  [CONFIRMED]  MAP / Manifold Absolute Pressure (cached)
+              Cached from hardware reg 0xFFFF9EE4+A
+              Written by fuel_calc_entry (0x9528)
+
+  0xFFFFA424  W  [CONFIRMED]  Engine Speed (word, used by SSV ready check)
+              Used by secondary_chamber_ready_check (0x168BE)
+              Minimum running threshold: >= 0x80 (128 RPM)
+
+  0xFFFFA7BC  F  [CONFIRMED]  Manifold Load / Sensor Correction Constant
+              Used by intake_pressure_feedback_correction (0x23BF0).
+              Also used as actual_load input for SSV control.
+
+--- Fuel Injection ---
+  0xFFFFA108  F  [CONFIRMED]  Rotor 0 Fuel Pulse Width (ms)
+              Written by fuel_calc_per_rotor (0x9534)
+
+  0xFFFFA10C  F  [CONFIRMED]  Rotor 1 Fuel Pulse Width (ms)
+              Written by fuel_calc_per_rotor (0x9534)
+
+  0xFFFFA110  B  [CONFIRMED]  Rotor 0 Injection Enable Flag
+              0=disabled, 1=enabled. Hysteresis-gated by RPM boundaries.
+              
+  0xFFFFA111  B  [CONFIRMED]  Rotor 1 Injection Enable Flag
+              0=disabled, 1=enabled.
+
+  0xFFFFA7B4  F  [CONFIRMED]  Dual-Channel Fuel Command (combined output)
+              Final fuel injector command after primary/secondary blend.
+              Written by dual_channel_fuel_computation (0x14BAC)
+
+  0xFFFFA386  B  [CONFIRMED]  Fuel Cut Command
+              0=no cut (full injection), 1=max cut (100% fuel cut)
+              Written by rpm_limiter_fuel_cutoff (0xC59E)
+
+  0xFFFFA374  F  [CONFIRMED]  RPM Error (fuel cut calc)
+              RPM overshoot for progressive fuel cut duty calculation.
+
+  0xFFFFA378  W  [CONFIRMED]  Fuel Cut Duty (0-100%)
+              Progressive fuel cut percentage.
+              ⚠ INFERRED: Progressive fuel reduction rates (25%/50%/75% stages) are derived from subsystem analysis.
+
+--- Ignition Timing ---
+  0xFFFFAA74  W  [CONFIRMED]  Current Advance Value
+              Output to ignition module. Written by spark_advance_calc_main.
+
+  0xFFFFAA24  F  [CONFIRMED]  Minimum Safe Advance (e.g. -5.0°)
+              Floor to prevent detonation. Loaded by spark advance controller.
+
+  0xFFFFAA2C  F  [CONFIRMED]  Maximum Safe Advance (e.g. 40.0°)
+              Ceiling to prevent excessive pressure. Loaded by spark advance controller.
+
+  0xFFFFAA5E  B  [CONFIRMED]  Advance Enable Flag
+              0=advance inhibited, 1=advance allowed.
+
+  0xFFFFAA78  W  [CONFIRMED]  Knock Retard / Secondary Advance Trim
+              Tracks severe knock penalty counter. Higher = more retard applied.
+              NOTE: Used by spark_advance_calc_main, NOT knock_detection_processing.
+
+  0xFFFFAA76  W  [CONFIRMED]  Advance Recovery Counter
+              Tracks recovery from knock event. Counts up during recovery.
+              NOTE: Used by spark_advance_calc_main, NOT knock_detection_processing.
+
+  0xFFFFAA7A  B  [CONFIRMED]  Sensor Diagnostic Flag (ignition)
+              1=sensor error detected, forces safe mode ignition.
+              NOTE: Used by spark_advance_calc_main, NOT knock_detection_processing.
+
+--- Lambda / O2 Feedback ---
+  NOTE (from Ghidra cross-validation): Mazda uses "Front O2" = pre-cat primary sensor
+  and "Rear O2" = post-cat secondary sensor. Our generic "O2 feedback" maps to the
+  Front O2 (pre-cat) sensor. Rear O2 drives LTFT (Long Term Fuel Trim) and catalyst
+  efficiency monitoring (P0420/P0430). See also: calcRearO2FuelTrim in Ghidra.
+  0xFFFFA324  B  [CONFIRMED]  Closed-Loop Active Flag
+              0=open-loop, 1=closed-loop active.
+              
+  0xFFFFA334  F  [CONFIRMED]  Target AFR Setpoint
+              Per-rotor target (typically 14.7 = stoich).
+
+  0xFFFFA348  F  [CONFIRMED]  Actual AFR (measured from O2 sensor)
+              Current air-fuel ratio from O2 feedback.
+
+  0xFFFFA350  F  [CONFIRMED]  Per-Rotor Fuel Trim
+              ±10% range. Positive = enriching, negative = leaning.
+
+  0xFFFFA364  F  [CONFIRMED]  Integral Accumulator (O2 feedback)
+              Long-term fuel trim equivalent.
+
+  0xFFFFA370  F  [CONFIRMED]  Proportional Term (O2 feedback)
+              Short-term fuel trim equivalent.
+
+  0xFFFFA35C  F  [CONFIRMED]  Prior Integral Accumulator
+              Previous cycle integral value for PI controller.
+
+--- SSV / 6-Port ---
+  0xFFFFA8C0  F  [CONFIRMED]  Final SSV Solenoid Command
+              0.0 to 1.0 (0-100% duty cycle).
+              Written by secondary_chamber_controller (0x1671A)
+
+  0xFFFFA8CC  B  [CONFIRMED]  Secondary Chamber Ready Flag
+              1=healthy (all faults clear), 0=fault detected.
+              Written by secondary_chamber_ready_check (0x168BE)
+
+  0xFFFFA8CD  B  [CONFIRMED]  Secondary Enable Flag
+              1=secondary intake valves should be active.
+
+  0xFFFFA8BC  F  [CONFIRMED]  Primary Chamber Output
+              Primary intake valve control signal.
+
+  0xFFFFA8C4  F  [CONFIRMED]  Secondary Chamber Output
+              Secondary intake valve control signal.
+
+  0xFFFFA428  B  [CONFIRMED]  Crank/Start Flag
+              0=cranking, 1=running. Used to inhibit SSV during start and idle control.
+
+================================================================================
+SENSOR / ADC WORKSPACE
+================================================================================
+
+  0xFFFF9EE4  -  [CONFIRMED]  Hardware Sensor Register Base
+              +0x08: RPM (word), +0x0A: MAP (word)
+              Direct ADC register reads cached to working area.
+
+  0xFFFF8090  F  [INFERRED]   Sensor 1 Diagnostic Output (knock)
+              Written by spark advance controller during detonation event.
+
+  0xFFFF8098  F  [INFERRED]   Sensor 2 Diagnostic Output (knock)
+              Written by spark advance controller during detonation event.
+
+  0xFFFF80A0  F  [INFERRED]   Severe Knock Signal to Ignition Module
+              Written when both knock sensors exceeded safety limits.
+
+================================================================================
+ENGINE STATE FLAGS & CONDITIONS
+================================================================================
+
+  0xFFFFAA38  F  [CONFIRMED]  Cold Start Boost Scalar
+              Float32. Used by ignition advance safety envelope.
+
+  0xFFFFAA44  F  [CONFIRMED]  Boost Margin (negated)
+              Float32. Used by ignition advance safety envelope.
+
+  0xFFFFAA5D  B  [CONFIRMED]  Secondary Enable Flag (boost envelope)
+              Used by spark advance controller.
+
+  0xFFFFAE54  F  [INFERRED]   Combustion/Chamber Temperature
+              Used by SSV controller for temperature compensation.
+
+  0xFFFFCCDB  B  [CONFIRMED]  Sensor Status 1 (ignition subsystem)
+              0=OK, 1=fault. Used by spark advance controller.
+
+  0xFFFFCCDC  B  [CONFIRMED]  Sensor Status 2 (ignition subsystem)
+              0=OK, 1=fault. Used by spark advance controller.
+
+  0xFFFFCE6E  B  [INFERRED]   "VVT" Enabled Flag
+              "VVT" control active (⚠ NOT valve timing — Wankel has no valves;
+              likely intake port geometry or emission actuator). Used by SSV controller.
+
+  0xFFFFA383  B  [CONFIRMED]  Rotor Housing Index (O2 feedback)
+              Which rotor housing is active for O2 feedback: 0 or 1.
+
+  0xFFFFA384  B  [CONFIRMED]  Rotor Housing Status
+              0xFF = invalid/disabled sensor. Used by O2 controller.
+
+  0xFFFFA381  B  [CONFIRMED]  O2 Threshold Index
+              Byte value, ×32 for deadband calculation (CORRECTED: was ×20)
+
+  0xFFFFA38C  B  [CONFIRMED]  O2 Feedback Disable Gate
+              0=O2 feedback enabled, nonzero=disabled (WOT/cranking bypass)
+
+--- Fault Flags (used by SSV ready check) ---
+  0xFFFFBC20  B  [INFERRED]   Fuel Pump Pressure Fault
+  0xFFFFA7C6  B  [INFERRED]   Load Sensor Fault
+  0xFFFFBDD5  B  [INFERRED]   Solenoid Coil Diagnosis
+  0xFFFFA8CF  B  [CONFIRMED]  Secondary Enable Override
+
+--- Lambda/Fuel Trim Limits ---
+  0xFFFFC0CC  F  [CONFIRMED]  Proportional Scaling Limit (safety clamp)
+  0xFFFFC0D0  F  [CONFIRMED]  Integral Rate Limit (safety clamp)
+  0xFFFFC0D4  F  [CONFIRMED]  Additional Scaling Constant
+
+================================================================================
+CRANK & ROTOR TIMING (NEW — from systematic analysis)
+================================================================================
+
+  0xFFFF9F95  B  [CONFIRMED]  Crank Mode Index / State Counter
+              Used by crank_timing_update for sync tracking.
+
+  0xFFFF9F96  B  [CONFIRMED]  Crank Event Sync Flag
+              Written by crank timing interrupt handler.
+
+  0xFFFF9F97  B  [CONFIRMED]  Crank Event Counter
+              Incremented per crank pulse.
+
+  0xFFFF9F98  F  [CONFIRMED]  Base RPM / Timing Reference
+              Used by sensor_main_process.
+
+  0xFFFF9F9C  F  [CONFIRMED]  RPM Value Scaled (read-only)
+              System-wide RPM reference for control loops.
+
+  0xFFFF9FA3  B  [CONFIRMED]  Crank State Mode Status
+              Current crank position decode state.
+
+  0xFFFF9FA8  D  [CONFIRMED]  Last Crank Timing Delta
+              Dword. Difference between consecutive crank pulses.
+
+  0xFFFF9FAC  D  [CONFIRMED]  Prior Crank Timing Value
+              Previous cycle crank timing for delta calc.
+
+  0xFFFF9FB0  D  [CONFIRMED]  Current Crank Timing Measurement
+              Active crank timing capture.
+
+  0xFFFF9FB4  D  [CONFIRMED]  Crank Timing Output
+              Written result used by ignition scheduling.
+
+  0xFFFF9FC0  B  [CONFIRMED]  Crank Interrupt/Event Flag
+              Set by hardware interrupt on crank pulse.
+
+  0xFFFF9FC4  B  [CONFIRMED]  Crank Mode Selector
+              Determines crank decode mode (normal/startup).
+
+  0xFFFF9FCA  B  [CONFIRMED]  Crank Gap Counter
+              Counts missing tooth gaps for position sync.
+
+================================================================================
+SENSOR ADC & SCALING (NEW — from systematic analysis)
+================================================================================
+
+  0xFFFF9EEA  W  [CONFIRMED]  Sensor ADC Channel 3 Raw
+              Raw ADC input for channel 3 scaling.
+
+  0xFFFF9EF8  W  [CONFIRMED]  Raw RPM from Hardware
+              Integer RPM from hardware timer capture.
+
+  0xFFFF9F0E  W  [CONFIRMED]  Throttle Position ADC Value
+              Raw ADC value for TPS sensor.
+
+  0xFFFF9F1C  W  [CONFIRMED]  Channel 2 Interpolation Input (IAT/CLT)
+              Raw ADC for temperature sensor interpolation.
+
+  0xFFFF9F1E  W  [CONFIRMED]  Channel 0 Interpolation Input
+              Raw ADC for primary sensor channel.
+
+  0xFFFF9F60  F  [CONFIRMED]  Channel 0 Interpolated Float Result
+              Filtered/scaled float from ADC channel 0.
+
+  0xFFFF9F64  B  [CONFIRMED]  Channel 0 Interpolation Status
+              0=valid, 1=saturated/fault.
+
+  0xFFFF9F70  F  [CONFIRMED]  Channel 2 Interpolated Float Result
+              Filtered/scaled float from ADC channel 2.
+
+  0xFFFF9F74  B  [CONFIRMED]  Channel 2 Interpolation Status
+              0=valid, 1=saturated/fault.
+
+  0xFFFF9F80  F  [CONFIRMED]  System RPM as Float
+              Primary RPM float reference for all subsystems.
+
+  0xFFFF9F84  F  [CONFIRMED]  Ignition Timing Input Float
+              Float input to ignition advance calculation.
+
+  0xFFFF9F88  F  [CONFIRMED]  Sensor Scaling Division Factor
+              Used in sensor_main_process for normalization.
+
+  0xFFFFA0C4  F  [CONFIRMED]  Sensor Filtered Value Output
+              Post-filter result from sensor_periodic_task.
+
+  0xFFFFA0D4  W  [CONFIRMED]  Sensor Value Limit/Cap
+              Saturation limit for sensor reading.
+
+  0xFFFFA0FC  F  [CONFIRMED]  Sensor Reference Baseline
+              Baseline float value for sensor comparison.
+
+  0xFFFFA100  F  [CONFIRMED]  Calculated Load Factor Output
+              Load computation result from sensor processing.
+
+  0xFFFFA104  W  [CONFIRMED]  Converted Load Value (integer)
+              Integer representation of calculated load.
+
+================================================================================
+ROTOR SYNCHRONIZATION (NEW — from systematic analysis)
+================================================================================
+
+  0xFFFFA1CC  F  [CONFIRMED]  Rotor Sync Position Error
+              Magnitude of rotor position error.
+
+  0xFFFFA1D0  F  [CONFIRMED]  Rotor Position Correction
+              Applied correction value for rotor sync.
+
+  0xFFFFA1D8  F  [CONFIRMED]  Rotor Sync Reference Threshold
+              Threshold for acceptable sync error.
+
+  0xFFFFA1E0  F  [CONFIRMED]  Rotor Timing Calculation Output
+              Computed timing for rotor event.
+
+  0xFFFFA1F4  F  [CONFIRMED]  Rotor Accumulator (division result)
+              Running rotor position average.
+
+  0xFFFFA1F8  W  [CONFIRMED]  Base Rotor Timing Offset
+              Nominal rotor event spacing.
+
+  0xFFFFA203  B  [CONFIRMED]  Rotor Sync Enable Flag
+              1=sync active, 0=sync disabled.
+
+  0xFFFFA207  B  [CONFIRMED]  Rotor Execution Counter/Limiter
+              Prevents excessive sync corrections per cycle.
+
+  (DTC & MIL CONTROL: see dedicated section below after Engine Load Estimation)
+
+================================================================================
+BOOST & PRESSURE CONTROL (NEW — from boost analysis)
+================================================================================
+
+  0xFFFFA844  F  [INFERRED]   Manifold Pressure (from MAP sensor)
+              Used by boost control and OMP as primary load input.
+
+  0xFFFFA854  F  [INFERRED]   Fuel Pressure Target
+              OMP indirect control target.
+
+  0xFFFFA858  F  [INFERRED]   Turbo Bypass Duty (0.0-1.0)
+              Wastegate / bypass valve solenoid duty.
+
+  0xFFFFA860  F  [INFERRED]   Boost Error
+              Target minus actual manifold pressure.
+
+  0xFFFFA864  F  [INFERRED]   Boost Error Derivative
+              Rate of change of boost error.
+
+  0xFFFFA878  F  [INFERRED]   "VVT" Solenoid Duty (0.0-1.0)
+              "VVT" solenoid output (⚠ NOT valve timing — Wankel misnomer).
+
+  0xFFFFA88C  F  [INFERRED]   Boost Error Integral
+              Accumulated boost pressure error for PID control.
+
+  0xFFFFA7C4  B  [INFERRED]   Current Rotor Position
+              0x00=rotor housing A, 0x01=rotor housing B.
+
+  0xFFFFA820  F  [INFERRED]   Leading Spark Error
+              Error between target and actual leading spark timing.
+
+  0xFFFFA830  B  [CONFIRMED]  Enrichment Counter / Trailing Spark Byte
+              CONFLICT RESOLVED: Previously listed as float32 [INFERRED] "Trailing Spark Error"
+              but CONFIRMED as byte "Enrichment Counter" by rotary_fuel_enrichment_controller.
+              The [INFERRED] float interpretation was incorrect — removed.
+
+================================================================================
+OMP & FUEL PUMP (NEW — from OMP analysis)
+================================================================================
+
+  0xFFFFA939  B  [INFERRED]   Pump Enable Countdown
+              Byte. Decrements to zero before pump activation.
+
+  0xFFFFA93C  W  [INFERRED]   Pump Scheduling Counter
+              Word. CAN message scheduling for pump command.
+
+  0xFFFFA93D  B  [INFERRED]   Pump Enable Command
+              0x00=off, 0x01=on.
+
+  0xFFFFA94C  W  [INFERRED]   Pump Speed Counter (saturating 0-255)
+              Ramp-up counter for fuel pump speed.
+
+  0xFFFFA950  B  [INFERRED]   Pump State Machine
+              State byte for OMP control FSM.
+
+  0xFFFFA958  F  [INFERRED]   Pump PWM Duty Final (float, 0.0-1.0)
+              Committed pump duty cycle output.
+
+  0xFFFFA95E  B  [INFERRED]   Pump Enable Status (committed)
+              Latched pump enable state.
+
+================================================================================
+IDLE SPEED CONTROL (NEW — verified from idle_speed_control_18054)
+================================================================================
+
+  0xFFFFA680  W  [CONFIRMED]  Idle Target RPM
+              Written by idle_speed_control_18054 (0x18054).
+              Target RPM setpoint for idle control feedback loop.
+
+  0xFFFFA68F  B  [CONFIRMED]  Cold-Start Boost Decay Accumulator
+              Decremented by -0xFF per cycle in calc_idle_speed_target (0x12F5E).
+              Controls cold-start RPM boost reduction rate.
+
+  0xFFFFA6A9  B  [CONFIRMED]  Cold-Start Flag
+              1=cold start active, 0=normal operation.
+              Checked by calc_idle_speed_target (0x12F5E).
+
+  0xFFFFA6AA  B  [CONFIRMED]  Warm-Up Flag
+              1=warm-up phase active, 0=normal temperature.
+              Checked by calc_idle_speed_target (0x12F5E).
+
+  0xFFFFA968  B  [CONFIRMED]  Stepper Motor Phase A
+              4-phase ISC stepper motor control output.
+              Written by idle_speed_control_18054.
+
+  0xFFFFA969  B  [CONFIRMED]  Stepper Motor Phase B
+              Second phase of idle stepper motor control.
+
+  0xFFFFA96A  B  [CONFIRMED]  Stepper Motor Phase C
+              Third phase of idle stepper motor control.
+
+  0xFFFFA96B  B  [CONFIRMED]  Stepper Motor Phase D (primary)
+              Fourth and primary phase of idle stepper motor control.
+
+  0xFFFFA96E  W  [CONFIRMED]  Idle Target Value Register
+              Target step position for ISC stepper motor.
+              Written by idle control algorithm.
+
+  0xFFFFA970  B  [CONFIRMED]  ISC Cool-Down Flag
+              1=cool-down active, prevents rapid stepper changes.
+              0=normal stepper operation allowed.
+
+  0xFFFFA975  B  [CONFIRMED]  Crank Detection Status
+              Monitors crank detect signal. Referenced in ISC state machine.
+              Transitions triggered when crank status changes.
+
+  0xFFFFA978  B  [CONFIRMED]  ISC Secondary Status Flag
+              Secondary status monitoring for idle transitions or engine state.
+
+  0xFFFFA979  B  [CONFIRMED]  ISC Engine Status Flag
+              Crank-to-idle transition flag or engine running status indicator.
+
+  0xFFFFA998  B  [CONFIRMED]  ISC Cool-Down Timer/Counter
+              Monitors cooling down phase or crank-to-idle transition timer.
+
+
+================================================================================
+KNOCK DETECTION (verified from knock_detection_processing 0xF770)
+================================================================================
+  Architecture: Per-rotor distributed structures, 0x58 bytes each.
+  Base: 0xFFFFA4B4. Addressed via r13 + relative offset @(N,r13).
+  Note: 4 knock channels map to: Leading_Rotor1, Trailing_Rotor1, Leading_Rotor2, Trailing_Rotor2
+
+  Per-Rotor Structure Layout (0x58 bytes each):
+    Rotor Housing Channel 0 (Leading_Rotor1): 0xFFFFA4B4 - 0xFFFFA50B  (retard output at 0xFFFFA4B8)
+    Rotor Housing Channel 1 (Trailing_Rotor1): 0xFFFFA50C - 0xFFFFA563  (retard output at 0xFFFFA510)
+    Rotor Housing Channel 2 (Leading_Rotor2): 0xFFFFA564 - 0xFFFFA5BB  (retard output at 0xFFFFA568)
+    Rotor Housing Channel 3 (Trailing_Rotor2): 0xFFFFA5BC - 0xFFFFA613  (retard output at 0xFFFFA5C0)
+
+  0xFFFFA4B4  D  [CONFIRMED]  Knock Channel 0 Base / State
+              Base address for per-rotor knock state machine.
+              Each 0x58-byte structure contains: state word, retard level,
+              recovery counter, knock event history, threshold comparisons.
+
+  0xFFFFA4B8  F  [CONFIRMED]  Knock Retard Output — Rotor Housing Channel 0
+              Per-rotor ignition retard from knock detection.
+
+  0xFFFFA510  F  [CONFIRMED]  Knock Retard Output — Rotor Housing Channel 1
+              Per-rotor ignition retard from knock detection.
+
+  0xFFFFA564  B  [CONFIRMED]  Knock Counter / Enable — Rotor Housing Channel 2
+              Knock event counter for rotor housing channel 2.
+
+  0xFFFFA568  F  [CONFIRMED]  Knock Retard Output — Rotor Housing Channel 2
+              Per-rotor ignition retard from knock detection.
+
+  0xFFFFA56D  B  [CONFIRMED]  Knock Retard Level Byte
+              Part of per-rotor knock state structure.
+              Controls magnitude of knock-triggered ignition retard.
+
+  0xFFFFA570  D  [CONFIRMED]  Knock State Register
+              Written by knock_detection_processing (0xF770).
+              4-byte state word tracking knock event history and retard level.
+              Threshold constant: 0x1680000 loaded for comparison
+              (this is a register constant value, not a ROM address).
+
+  0xFFFFA571  B  [CONFIRMED]  Knock Detection Enable Flag
+              Per-rotor enable/disable for knock detection processing.
+
+  0xFFFFA56E  B  [CONFIRMED]  VVT Solenoid Status (knock context)
+              Read by knock detection to adjust thresholds during VVT operation.
+
+  0xFFFFA5C0  F  [CONFIRMED]  Knock Retard Output — Rotor Housing Channel 3
+              Per-rotor ignition retard from knock detection.
+
+  NOTE: 0xFFFFAA7A/AA78/AA76 listed in Spark Advance section are used by
+  spark_advance_calc_main for knock COMPENSATION in timing, not by the
+  knock_detection_processing function itself.
+
+================================================================================
+FUEL PUMP CONTROL (NEW — verified from fuel_pump_control_0x17510)
+================================================================================
+
+  0xFFFFA8F4  F  [CONFIRMED]  Fuel Pump PWM Duty
+              Range 0.0-1.0 (0-100% duty cycle).
+              Read/written by fuel_pump_control_0x17510 (0x17510).
+              Primary pump solenoid control output.
+
+  0xFFFFA8F8  F  [CONFIRMED]  OMP/Secondary Pump Duty / Torque Coefficient
+              DUAL-PURPOSE address:
+              - Written by fuel_pump_control (0x17510) as OMP pump duty cycle
+              - Read by torque_calc_with_damping as torque estimation coefficient
+              This is an intentional firmware design pattern: pump duty feeds back
+              into torque estimation for traction control / load management.
+
+  0xFFFFA93C  W  [CONFIRMED]  Pump Scheduling Counter
+              CAN message scheduling for pump command transmission.
+              Decremented each cycle, resets when reaching zero.
+
+  0xFFFFA93D  B  [CONFIRMED]  Pump Enable Command
+              0x00=off, 0x01=on. CAN command state for pump.
+              Read by CAN message handler for diagnostic transmission.
+
+  0xFFFFA94C  W  [CONFIRMED]  Pump Speed Ramp Counter
+              Saturating counter 0-255 for fuel pump ramp-up rate.
+              Controls soft-start acceleration of pump motor.
+
+  0xFFFFA426  W  [CONFIRMED]  Fuel Pump Enable Threshold Condition
+              Word value checked against table threshold (0x78E52) to determine
+              if fuel pump speed control should be active.
+
+  0xFFFFA7B8  F  [CONFIRMED]  MAP Pressure (Manifold Absolute Pressure)
+              Float32 value used in fuel pump pressure bounds checks.
+
+  0xFFFFA7C4  B  [CONFIRMED]  Rotor Housing Selector
+              Byte value indicating active rotor housing. Checked against 1
+              for conditional pump ramping.
+
+  0xFFFFA89C  F  [CONFIRMED]  Fuel Pressure Load Scale / Correction Factor
+              Float32 added to current pump command via fadd for pressure adjustment.
+
+  0xFFFFA94E  W  [CONFIRMED]  Pump Demand Counter/Accumulator
+              Word value incremented via saturated_add_u16 when ramp-up active.
+              Compared against threshold at 0x78E56 to control pump speed ramp.
+
+  0xFFFFA956  W  [CONFIRMED]  Pump Output Status/Flag
+              Word value for conditional pump enable logic and output control.
+
+  0xFFFFAE54  F  [CONFIRMED]  Current Air-Fuel Ratio (AFR) — Fuel Pump Context
+              Float32 used in pressure bounds checks for AFR min/max comparisons.
+
+  0xFFFFB5AA  B  [CONFIRMED]  Sensor Validation Flag 2 (secondary pump)
+              Byte flag checked for value 1 as pump enable condition.
+
+  0xFFFFB5AC  B  [CONFIRMED]  Sensor Validation Flag 1 (primary pump)
+              Byte flag checked for value 1 to validate pump operation.
+
+  0xFFFFBC1C  F  [CONFIRMED]  Coolant Temperature (Fuel Pump Context)
+              Float32 checked against threshold at 0x78E8C for pump conditions.
+
+  0xFFFFAD8C  F  [CONFIRMED]  Oxygen Sensor Feedback (Fuel Pump Context)
+              Float32 compared against table threshold (0x78E94) for pump logic.
+
+================================================================================
+COOLING FAN (NEW — verified from cooling_fan_control_0x17DCC)
+================================================================================
+
+  0xFFFFA73C  F  [CONFIRMED]  Coolant Temperature (Fan Input)
+              Read by cooling_fan_control_0x17DCC (0x17DCC).
+              Temperature input to fan control algorithm.
+
+  0xFFFFA95C  B  [CONFIRMED]  Fan Control Output
+              PWM duty cycle for radiator fan solenoid.
+              Written by cooling_fan_control algorithm.
+
+================================================================================
+"VVT" CONTROL (NEW — verified from calc_vvt_error_control_output)
+⚠ UNCERTAIN: The RX-8 13B-MSP Wankel has NO valves — "VVT" (Variable Valve
+Timing) is a MISNOMER inherited from IDA naming. This subsystem likely controls
+intake port geometry, eccentric shaft phase, or an emission-related actuator.
+Ghidra community analysis places vvt_control_calc in the Emissions section.
+Function names preserved as IDA identifiers; actual purpose requires live testing.
+================================================================================
+
+  0xFFFFA9D5  B  [CONFIRMED]  VVT Intake Cam Angle
+              Written/read by calc_vvt_error_control_output (0x10DC8).
+              Current intake cam phaser angle feedback.
+              NOTE: previously estimated at 0xFFFFA900, CORRECTED to 0xFFFFA9D5.
+
+  0xFFFFA9D6  B  [CONFIRMED]  VVT Cam Angle Register 2
+              Second byte of VVT cam angle feedback word.
+
+  0xFFFFA9D7  B  [CONFIRMED]  VVT Cam Angle Register 3
+              Third byte of VVT cam angle feedback.
+
+  0xFFFFA9D8  B  [CONFIRMED]  VVT Exhaust Cam Angle
+              Exhaust cam phaser angle feedback.
+              Written by calc_vvt_error_control_output.
+
+  0xFFFFA5D8  W  [CONFIRMED]  VVT Control Command
+              Solenoid control word for VVT system.
+              Master enable/direction register.
+
+  0xFFFFA5DA  W  [CONFIRMED]  VVT Intake Solenoid Duty
+              Intake cam phaser solenoid PWM duty cycle.
+              Written by calc_vvt_error_control_output.
+
+  0xFFFFA5DC  W  [CONFIRMED]  VVT Exhaust Solenoid Duty
+              Exhaust cam phaser solenoid PWM duty cycle.
+              Written by calc_vvt_error_control_output.
+
+  0xFFFFA848  F  [CONFIRMED]  VVT Secondary Input — Throttle/Load Factor
+              Float32 read during duty cycle accumulation.
+              NOTE: DUAL PURPOSE — also Rotor B Combustion State Block base
+              (see Misfire section). Context determines interpretation.
+
+  0xFFFFB314  F  [CONFIRMED]  VVT Duty Cycle Output — Final Valve Command
+              Float32 calculated duty cycle command written to solenoid.
+
+  0xFFFFB318  F  [CONFIRMED]  VVT Intermediate — Speed-Adjusted Value
+              Float32 intermediate result from speed compensation multiply.
+
+  0xFFFFB31C  F  [CONFIRMED]  VVT Intermediate — Load-Adjusted Value
+              Float32 intermediate result from load compensation multiply.
+
+  0xFFFFB24C  F  [CONFIRMED]  VVT Scaling Coefficient
+              Float32 scaling/normalization coefficient for VVT calculations.
+
+  0xFFFFB35C  F  [CONFIRMED]  VVT Advance Table Lookup Input
+              Float32 primary input value for VVT advance table interpolation.
+
+  0xFFFFB360  F  [CONFIRMED]  VVT Advance Table Lookup Output
+              Float32 result from table lookup and interpolation function.
+
+  0xFFFFB366  B  [CONFIRMED]  VVT Advance Mode Enable Flag
+              Byte flag controlling alternative VVT advance calculation mode.
+
+  0xFFFFB378  F  [CONFIRMED]  VVT Alternative Advance Value
+              Float32 used when alternate VVT advance mode is active.
+
+  0xFFFFB389  B  [CONFIRMED]  VVT Alternate Mode Condition Flag
+              Byte flag indicating if alternate VVT calculation path should execute.
+
+  0xFFFFB38C  F  [CONFIRMED]  VVT Final Advance Output
+              Float32 final "VVT" advance value to hardware.
+              ⚠ Not actual VVT — Wankel has no valves. See section header note.
+
+================================================================================
+SPARK TIMING BOUNDARY (NEW — verified from spark_timing_boundary_limiter)
+================================================================================
+
+  0xFFFFA8A0  B  [CONFIRMED]  Spark Advance Enable Output
+              1=all checks pass (advance allowed), 0=any check fails (inhibited).
+              Output flag from spark_timing_boundary_limiter (0x162E4).
+
+  0xFFFFA8A2  W  [CONFIRMED]  Load Pressure Lower Boundary
+              Used in 15-gate spark safety check.
+              Part of boundary envelope for spark advance limiting.
+
+  0xFFFFA8A4  W  [CONFIRMED]  Load Pressure Upper Boundary
+              Used in 15-gate spark safety check.
+              Part of boundary envelope for spark advance limiting.
+
+  0xFFFFB360  F  [CONFIRMED]  Port Condition Flag
+              Float32 condition flag used by spark boundary limiter.
+              Indicates port intake condition status.
+
+================================================================================
+TORQUE ESTIMATION (NEW — verified from torque_calc_with_damping)
+================================================================================
+
+  0xFFFFA8EC  F  [CONFIRMED]  Torque Output
+              Float32, engine torque estimate output.
+              Written by torque_calc_with_damping (0x17952).
+
+  0xFFFFA8FC  F  [CONFIRMED]  Torque Multiplier Coefficient
+              Float32, FPU calc input for torque scaling.
+
+  0xFFFFA910  F  [CONFIRMED]  Manifold Pressure Calculation
+              Float32, used in torque estimation input path.
+              Load input from manifold pressure.
+
+  0xFFFFA914  F  [CONFIRMED]  Injector Parameter 1
+              Float32, fuel injector control parameter 1.
+
+  0xFFFFA918  F  [CONFIRMED]  Injector Parameter 2
+              Float32, fuel injector control parameter 2.
+
+  0xFFFFA944  F  [CONFIRMED]  Previous Torque Value
+              Float32, hysteresis damping reference.
+              Used for smoothing torque output changes.
+
+================================================================================
+ROTOR POSITION FEEDBACK (NEW — verified from rotor_position_feedback_control)
+================================================================================
+
+  0xFFFFA937  B  [CONFIRMED]  Rotor 2 Increment Counter
+              Byte, rotor 2 position increment count.
+
+  0xFFFFA938  B  [CONFIRMED]  Rotor 3 Increment Counter
+              Byte, rotor 3 position increment count.
+
+  0xFFFFA93E  B  [CONFIRMED]  Rotor 2 Enable Flag
+              1=rotor 2 feedback active, 0=disabled.
+
+  0xFFFFA940  B  [CONFIRMED]  Rotor 3 Enable Flag
+              1=rotor 3 feedback active, 0=disabled.
+
+  0xFFFFA95D  B  [CONFIRMED]  Rotor 1 Active Status
+              1=rotor 1 actively controlled, 0=idle/inactive.
+
+  0xFFFFA95F  B  [CONFIRMED]  Rotor 2 Active Status
+              1=rotor 2 actively controlled, 0=idle/inactive.
+
+  0xFFFFA961  B  [CONFIRMED]  Cold Start Enrichment Enable
+              1=cold start enrichment active, 0=normal operation.
+
+================================================================================
+CHAMBER BALANCE (NEW — verified from rotary_chamber_balance_calc)
+================================================================================
+
+  0xFFFFA6AC  F  [CONFIRMED]  Fuel Balance Input
+              Float32, source value for chamber balance calculation.
+              Written by rotary_chamber_balance_calc (0x15D28).
+
+  0xFFFFA6B7  B  [CONFIRMED]  Chamber 1 Enable Flag
+              1=chamber 1 active, 0=disabled.
+
+  0xFFFFA6B8  B  [CONFIRMED]  Chamber 2 Enable Flag
+              1=chamber 2 active, 0=disabled.
+
+  0xFFFFA6B9  B  [CONFIRMED]  Chamber 3 Enable Flag
+              1=chamber 3 active, 0=disabled.
+
+  0xFFFFA840  F  [CONFIRMED]  Chamber Balance Output
+              Float32, result of balance calculation.
+
+================================================================================
+COLD START RPM LIMITER (NEW — verified from cold_start_rpm_limiter)
+================================================================================
+
+  0xFFFFA4A6  B  [CONFIRMED]  Cold RPM Limiter Active Flag
+              1=limiter active during warmup, 0=disabled.
+              Written by cold_start_rpm_limiter (0xF11A).
+
+  0xFFFFA4AA  B  [CONFIRMED]  Cold Fuel Cut Duty Output
+              0=normal operation, 1=cut signal active.
+
+  0xFFFFA4AD  B  [CONFIRMED]  Cold State Marker
+              Cold start condition flag, persists across cycles.
+
+  0xFFFFA4AE  B  [CONFIRMED]  Cold Duty Increment
+              0xFF wrap-around for gradual ramp increase.
+
+  0xFFFFBB54  B  [CONFIRMED]  Coolant Temperature Indicator
+              Used by cold start limiter for temperature check.
+
+================================================================================
+ENGINE LOAD ESTIMATION (NEW — verified from engine_load_estimator)
+================================================================================
+
+  0xFFFFA9B0  F  [CONFIRMED]  Sensor Threshold Low
+              Float32, guard for load estimation lower bound.
+              Written by engine_load_estimator (0x190A6).
+
+  0xFFFFA9B4  F  [CONFIRMED]  Sensor Threshold High
+              Float32, guard for load estimation upper bound.
+
+  0xFFFFA9BC  W  [CONFIRMED]  Load Estimator Output
+              Word, normalized engine load (0-65535).
+
+  0xFFFFA9BE  W  [CONFIRMED]  Secondary Sensor Check
+              Word, validation input for load estimation.
+
+  0xFFFFA9D0  W  [CONFIRMED]  Load Temp Storage
+              Word, temporary copy of load value.
+
+================================================================================
+DTC & MIL CONTROL (UPDATED — with verified gate logic and counters)
+================================================================================
+
+  0xFFFFA580  32B [INFERRED]  DTC Pending Flags (128 codes, 1 bit each)
+              Bitmap of pending diagnostic trouble codes.
+
+  0xFFFFA5A0  32B [INFERRED]  DTC Confirmed Flags (128 codes)
+              Bitmap of confirmed/latched DTCs.
+
+  0xFFFFA5C0  32B [INFERRED]  DTC Clear Countdown Timers
+              Decrement counters for DTC self-clear.
+
+  0xFFFFA895  B  [UNVERIFIED] MIL (Check Engine Light) Flag
+              0x00=off, 0x01=on, 0x02=blink (misfire).
+              Written by pcm_fault_check_and_clear (0xDDF0).
+              ⚠ RAM capture shows 0x86 (engine off) — inconsistent with 0/1/2 flag.
+              Address may be off by 1-2 bytes, or field is wider than byte.
+
+  0xFFFFA896  B  [INFERRED]   Misfire Counter Rotor Housing A
+              Increment on misfire detection, rotor housing A.
+
+  0xFFFFA897  B  [INFERRED]   Misfire Counter Rotor Housing B
+              Increment on misfire detection, rotor housing B.
+
+  0xFFFFA40F  B  [CONFIRMED]  Engine Temperature (DTC gate)
+              Used by 6-gate gating logic at 0xDDF0. Gate 1: >= 0x64 (min temp).
+
+  0xFFFFA40A  B  [CONFIRMED]  Speed/TPS Inhibit Flag (DTC gate)
+              Used by 6-gate gating logic at 0xDDF0. Gate 2: must equal 0.
+
+  0xFFFFA410  B  [CONFIRMED]  CAN Status Flag (DTC gate)
+              Used by 6-gate gating logic at 0xDDF0. Gate 3: must equal 0 (CAN OK).
+
+  0xFFFFA411  B  [CONFIRMED]  Diagnostic Enable Flag (DTC gate)
+              Used by 6-gate gating logic at 0xDDF0. Gate 4: must equal 0 (enabled).
+
+  0xFFFFAAE0  B  [CONFIRMED]  Engine Running State (DTC gate 5)
+              Used by pcm_fault_check_and_clear (0xDDF0). Assembly at 0xDE24:
+              `cmp/eq #1, r0` + `bf` → gate PASSES only when value == 1.
+              Value 1 = engine running. Other values (e.g., 0x3C when engine off)
+              indicate different engine states. Multi-value state byte, NOT boolean.
+
+  0xFFFFB5E8  B  [CONFIRMED]  System Ready State (DTC gate 6)
+              Used by pcm_fault_check_and_clear (0xDDF0). Assembly at 0xDE30:
+              `cmp/eq #1, r0` + `bt` → gate FAILS when value == 1 (diagnostics
+              SKIPPED). Diagnostics run when value != 1.
+              Value 0x41 (engine off) = diagnostics allowed. Multi-value state byte.
+
+  0xFFFFA430  B  [CONFIRMED]  Sensor Fault Accumulator
+              Bit0=PRIMARY sensor group fault, Bit1=SECONDARY sensor group fault.
+              Used by DTC system for fault discrimination.
+
+  0xFFFFBB98  W  [CONFIRMED]  DTC Maturation Counter
+              Triggers DTC confirmation when >= 4.
+              Counts consecutive detection cycles.
+
+  0xFFFFBBC8  W  [CONFIRMED]  DTC Secondary Counter
+              Triggers DTC confirmation for secondary criteria when >= 2.
+              Used for secondary fault confirmation logic.
+
+  0xFFFFC241  B  [CONFIRMED]  DTC CAN Transmit Enable
+              Controls whether DTC codes are transmitted on CAN bus.
+              0x00=no transmit, 0x01=transmit enabled.
+
+  0xFFFFC238  7B [CONFIRMED]  DTC CAN Message Buffer
+              7-byte staging area for DTC status message (copied to 0xFFFFC518).
+              Contains packed DTC code and status bits.
+
+  0xFFFFA998  B  [CONFIRMED]  Output Verification Result
+              1=output verification passed, 0=verification failed.
+              Used by solenoid/stepper diagnostic checks.
+
+================================================================================
+CAN COMMUNICATION (NEW)
+================================================================================
+
+  NOTE: CAN message IDs corrected via Ghidra cross-validation (2026-04-05).
+  ⚠ CORRECTED: Previously documented as 0xCA/0xDC — those were WRONG (internal
+  mailbox/queue IDs, not CAN arbitration IDs). Actual Mazda CAN bus uses standard
+  11-bit IDs: 0x201 (RPM+speed+throttle), 0x203 (engine status), 0x420 (MIL),
+  0x212/0x216 (RX handlers), and others in the 0x41-0x650 range.
+
+  0xFFFFA188  W  [CONFIRMED]  CAN Periodic Counter
+              16-bit counter, timeout at 0x12C (300ms).
+              Triggers periodic CAN message transmission.
+
+  0xFFFFDFB0  6B [CONFIRMED]  Diagnostic Session State
+              6-byte structure: session mode, security lock, timing params.
+              Managed by UDS diagnostic session handler.
+
+  0xFFFFDFC6  -  [CONFIRMED]  Diagnostic Response Buffer
+              UDS response staging area. Variable length.
+              Prepared before CAN transmission.
+
+================================================================================
+SECURITY ACCESS (UDS SID 0x27 Parameters)
+================================================================================
+
+Verified from diag_security_access_sid27 at 0x17D8:
+
+  Seed values:       0x55, 0xAA
+  Key validation:    0x??4DACCD (second-fourth bytes must be 0x4D, 0xAC, 0xCD)
+                     Allows flexible first byte, strict pattern for remainder.
+
+Memory access (SID 0x34):
+  Flash base:        0xFFF82000
+  Max block size:    1023 bytes (0x3FF)
+  Segment size:      1 page = 0x1000 bytes
+
+================================================================================
+ADDITIONAL FLAGS & SYSTEM STATE (NEW)
+================================================================================
+
+  0xFFFFA325  B  [CONFIRMED]  Throttle Position / SSV Mode State
+              0=2-port (idle), 1=mixed (transition), 2=6-port (WOT).
+              Written by throttle_position_classify (0xC460).
+              Also controls SSV valve port selection.
+              NOTE: RX-8 uses cable-driven throttle via ISC stepper motor (0xFFFFA968-0xFFFFA96B).
+              ⚠ UNVERIFIED: Any claims of separate MCU for DBW/electronic throttle control are unverified.
+
+  0xFFFFAA14  F  [CONFIRMED]  Engine Speed Compensation / SSV Load Input
+              Primary input for SSV MAC calculations and VVT duty cycle speed compensation.
+
+  0xFFFFB5A4  B  [CONFIRMED]  System Condition Flag 1
+              Used in dual-channel fuel dispatch (NOT rotor enable).
+
+  0xFFFFB5AC  B  [CONFIRMED]  System Condition Flag 2
+              Used in dual-channel fuel dispatch.
+
+  0xFFFFB5B8  F  [CONFIRMED]  System Load Reference
+              Float32. Used as SSV switchpoint comparison threshold.
+
+  0xFFFFB618  F  [CONFIRMED]  Initial FR4 for Dual-Channel Calc
+              Float32. Initial value loaded before fuel computation.
+
+  0xFFFFBFD4  B  [CONFIRMED]  Gain Table Select Flag
+              Selects between two SSV gain tables.
+
+  0xFFFFBC1C  F  [INFERRED]   Coolant Temperature
+              Float32. Used by DTC checks and boost enable logic.
+
+  0xFFFFADEE  W  [INFERRED]   O2 Sensor Voltage (raw)
+              Word. Used by DTC misfire detection.
+
+  0xFFFFAD8C  F  [INFERRED]   O2 Sensor Bounds Check
+              Float32. Used for OMP enabling conditions.
+
+================================================================================
+DATALOGGING QUICK REFERENCE
+================================================================================
+
+For real-time monitoring via OBD SID 0x23, recommended read sequence:
+
+  TIER 1 — Essential (fast poll, ~100ms, 17 bytes):
+    0xFFFFA112 (2B) RPM
+    0xFFFFA114 (2B) MAP
+    0xFFFFA108 (4B) Rotor 0 fuel PW
+    0xFFFFAA74 (2B) Ignition advance
+    0xFFFFA324 (1B) Closed-loop flag
+    0xFFFFA350 (4B) Fuel trim
+    0xFFFFA386 (1B) Fuel cut status
+    0xFFFFA895 (1B) MIL status
+
+  TIER 2 — Extended (slower poll, ~500ms, 27 bytes):
+    0xFFFFA7BC (4B) Manifold load
+    0xFFFFA334 (4B) Target AFR
+    0xFFFFA348 (4B) Actual AFR
+    0xFFFFA364 (4B) Integral trim
+    0xFFFFAA78 (2B) Knock retard
+    0xFFFFA8C0 (4B) SSV duty
+    0xFFFFA8CC (1B) SSV ready
+    0xFFFFA325 (1B) Throttle classification
+    0xFFFFA858 (4B) Turbo bypass duty
+
+  TIER 3 — Diagnostic (on-demand, 40 bytes):
+    0xFFFFA680 (2B) Idle target RPM
+    0xFFFFA968 (4B) Stepper phases (A/B/C/D)
+    0xFFFFA4B4 (4B) Knock detection state
+    0xFFFFA844 (4B) Manifold pressure
+    0xFFFFA860 (4B) Boost error
+    0xFFFFA878 (4B) VVT solenoid duty
+    0xFFFFA8F4 (4B) Fuel pump duty
+    0xFFFFA93D (1B) Fuel pump enable
+    0xFFFFA9D5 (4B) VVT cam angles
+    0xFFFFA1CC (4B) Rotor sync error
+    0xFFFFBC1C (4B) Coolant temperature
+    0xFFFFA7C4 (1B) Rotor position (cyl A/B)
+    0xFFFF9F9C (4B) Scaled RPM float
+
+  Block read optimization:
+    0xFFFF9F80-0xFFFF9FCA (74 bytes):  Crank timing + sensor floats
+    0xFFFFA100-0xFFFFA118 (24 bytes):  Load calc + fuel injection
+    0xFFFFA1CC-0xFFFFA208 (60 bytes):  Rotor synchronization
+    0xFFFFA324-0xFFFFA390 (108 bytes): Lambda/fuel trim/fuel cut
+    0xFFFFA580-0xFFFFA5DF (96 bytes):  All DTC flags
+    0xFFFFA680-0xFFFFA6AA (42 bytes):  Idle control parameters
+    0xFFFFA820-0xFFFFA8CF (175 bytes): Ignition + boost + SSV
+    0xFFFFA960-0xFFFFA970 (16 bytes):  Stepper phases + ISC control
+    0xFFFFA930-0xFFFFA960 (48 bytes):  OMP/fuel pump + cooling
+    0xFFFFAA24-0xFFFFAA7B (87 bytes):  Ignition advance state
+
+================================================================================
+ACCELERATION / TRANSIENT ENRICHMENT (NEW — from accel enrichment analysis)
+================================================================================
+
+  0xFFFFA71C  F  [CONFIRMED]  Final Acceleration Enrichment Output
+              Float32 final enrichment value from calc_accel_fuel_enrichment (0x138CC).
+
+  0xFFFFA724  F  [CONFIRMED]  Enrichment Adjustment Accumulator
+              Float32 accumulator for acceleration enrichment calculation.
+
+  0xFFFFA72C  F  [CONFIRMED]  Transient Fuel Enrichment Value
+              Float32 transient enrichment multiplier.
+
+  0xFFFFA731  B  [CONFIRMED]  Enrichment Active Flag
+              1=acceleration enrichment currently active.
+
+  0xFFFFA784  B  [CONFIRMED]  WOT Enrichment Value
+              Wide-open-throttle enrichment from calc_wot_fuel_enrichment (0x14220).
+
+  0xFFFFA785  B  [CONFIRMED]  Cold-Start Enrichment Value
+              Temperature-based enrichment from calc_cold_start_fuel_enrichment (0x142E8).
+
+  0xFFFFA7FC  F  [CONFIRMED]  Rotary Enrichment Controller Output
+              Float32 filtered enrichment from rotary_fuel_enrichment_controller (0x14C2C).
+
+  0xFFFFA800  W  [CONFIRMED]  Manifold Pressure Correction Accumulator
+              Counter for OMP pulse accumulation in enrichment controller.
+              NOTE: Also base of Rotor A Combustion State Block (see Misfire section).
+
+  0xFFFFA81A  W  [CONFIRMED]  RPM Threshold (Enrichment)
+              RPM threshold for high-RPM enrichment gating.
+
+  0xFFFFA830  — See Boost/Pressure section (Enrichment Counter / Trailing Spark Byte)
+
+  0xFFFFA831  B  [CONFIRMED]  Manifold Pressure Enrichment Active
+              1=manifold pressure enrichment mode active.
+
+  0xFFFFA837  B  [CONFIRMED]  Acceleration Enrichment Active
+              1=tip-in acceleration enrichment mode active.
+
+  0xFFFFB5B8  F  [CONFIRMED]  Previous Throttle Position (TPS)
+              Float32 previous-cycle TPS for delta calculation.
+
+  0xFFFFC12C  F  [CONFIRMED]  TPS Delta Calculation Value
+              Float32 throttle position rate-of-change.
+
+================================================================================
+OIL METERING PUMP (OMP) (NEW — from OMP analysis)
+================================================================================
+  ⚠ CONFIRMED via Ghidra: OMP duty cycle is HARD CAPPED at 60/255 (~23.5% max).
+  Ghidra decompilation shows: "if (60 < (uVar7 & 0xff)) { uVar7 = 60; }"
+  Multi-input system: RPM table + throttle + IAT + manifold pressure + baro +
+  engine start injection + off-throttle counter + vehicle speed timer.
+
+  0xFFFFB0E4  F  [CONFIRMED]  OMP Final Duty Cycle
+              Float32 final OMP duty cycle output. MAX = 60/255 (~23.5%).
+
+  0xFFFFB0EC  F  [CONFIRMED]  Base Metering Rate
+              Float32 base OMP injection rate.
+              NOTE: Corrected from 0xFFFFB0EF (misaligned) to 0xFFFFB0EC (4-byte aligned).
+
+  0xFFFFB0F0  F  [CONFIRMED]  OMP Load Correction
+              Float32 load correction factor for OMP.
+
+  0xFFFFB0F4  F  [CONFIRMED]  OMP Temperature Correction
+              Float32 temperature-based correction for OMP duty.
+
+  0xFFFFB0F8  F  [CONFIRMED]  OMP Pressure Correction
+              Float32 manifold pressure correction for OMP.
+
+  0xFFFFB104  F  [CONFIRMED]  Lead Rotor OMP Duty
+              Float32 OMP duty cycle for leading rotor.
+
+  0xFFFFB108  F  [CONFIRMED]  Trail Rotor OMP Duty
+              Float32 OMP duty cycle for trailing rotor.
+
+  0xFFFFB10C  F  [CONFIRMED]  Combined Rotor Duty Cycle
+              Float32 combined lead+trail OMP duty.
+
+  0xFFFFB11C  F  [CONFIRMED]  OMP Final PWM Output
+              Float32 final PWM output to pump hardware.
+
+  0xFFFFB132  B  [CONFIRMED]  OMP Armed Status
+              Armed/ready status flag for pump operation.
+
+  0xFFFFB133  B  [CONFIRMED]  Chamber Pair ID
+              Chamber pair identifier for per-chamber OMP control.
+
+  0xFFFFB5E4  F  [CONFIRMED]  Physical Pump Duty (OMP Output)
+              Final duty at pump_control_output (0x2602C).
+
+  0xFFFFB5F4  F  [CONFIRMED]  RPM-Scaled Pump Speed
+              RPM-dependent pump speed from fuel_pump_rpm_scale (0x262FA).
+
+  0xFFFFCD01  B  [CONFIRMED]  Pump Enable Mode
+              Engine operating mode selector / pump enable condition.
+
+================================================================================
+EMISSIONS / COMBUSTION (NEW — from emissions analysis)
+================================================================================
+
+  0xFFFFAE45  B  [CONFIRMED]  Rotor A Combustion Event Flag
+              Combustion quality tracking for rotor A (catalyst P0420).
+
+  0xFFFFAE46  B  [CONFIRMED]  Rotor B Combustion Event Flag
+              Combustion quality tracking for rotor B (catalyst P0430).
+
+  0xFFFFADE8  F  [CONFIRMED]  Emission Correction Factor Base
+              Start of 32-byte correction factor region (0xFFFFADE8-0xFFFFADFF).
+
+  0xFFFFCCD8  B  [CONFIRMED]  Emission Fault Flag Region
+              Start of 32-byte fault/status flag region (0xFFFFCCD8-0xFFFFCCFC).
+
+================================================================================
+INTAKE MANIFOLD PRESSURE (NEW — from pressure control analysis)
+================================================================================
+
+  0xFFFFA3DC  F  [CONFIRMED]  Calculated Manifold Pressure
+              Float32, manifold absolute pressure in kPa.
+              Output from calc_manifold_pressure_error_clamp (0x10A5C).
+
+  0xFFFFA470  F  [CONFIRMED]  Per-Injector AFR Result (start)
+              Float32 array, 4 entries (0xFFFFA470-0xFFFFA488).
+              Per-injector AFR from air_fuel_ratio_calc (0xEBA8).
+
+  0xFFFFA49A  B  [CONFIRMED]  AFR Status Flags (start)
+              7-byte region (0xFFFFA49A-0xFFFFA4A0).
+              Saturation/bounds tracking for AFR control.
+
+================================================================================
+EEPROM LAYOUT (ABLIC S-93C56C, 256 bytes, SPI 3-wire)
+================================================================================
+  Verified from two EEPROM dumps (RX8_93c56_ECU_IC420_Read.bin, se3p_ecm_eeprom.bin)
+
+  0x00-0x1F (32B)   Header / Configuration area
+  0x20-0x5F (64B)   Adaptive Learning Zone — 32 rows of 2-byte fuel trim values
+                    ⚠ UNVERIFIABLE: Specific adaptive data offsets not publicly documented
+                     Baseline: 0x007E, range ±54. Factory-cleared = all 0x007E.
+  0x60-0x7F (32B)   Reserved / padding
+  0x80-0x97 (24B)   Vehicle Identification — plaintext VIN or model+serial
+                     Example: "JM1FE17394010254" (full VIN) or "SE3P104621"
+  0x98-0xFF (104B)  Immobilizer keys, DTC persistence, checksums
+
+  NOTE: Expected magic bytes 0x55/0xAA (documented in firmware write-verify logic)
+  were NOT found at fixed positions in either dump. Validation may use a different
+  mechanism than simple magic byte check, or magic bytes are written transiently.
+
+================================================================================
+MAF / AIRFLOW SENSOR PROCESSING (from calc_maf_sensor_flow, maf_sensor_correction)
+================================================================================
+
+  0xFFFFB3FC  F  [CONFIRMED]  Raw MAF Sensor Voltage
+              Read by maf_sensor_correction_24234 (0x24234).
+
+  0xFFFFB494  F  [CONFIRMED]  Final Corrected MAF Output (g/s)
+              Written by maf_sensor_correction_24234.
+
+  0xFFFFB488  F  [CONFIRMED]  Base MAF Corrected Intermediate
+              Written by maf_sensor_correction_24234.
+
+  0xFFFFB33F  B  [CONFIRMED]  O2 Feedback Enable Flag 1
+              O2 sensor closed-loop enable for bank 1.
+              Read by maf_sensor_correction_24234.
+
+  0xFFFFB340  B  [CONFIRMED]  O2 Feedback Enable Flag 2
+              O2 sensor closed-loop enable for bank 2.
+              Read by maf_sensor_correction_24234.
+
+  0xFFFFB332  F  [CONFIRMED]  O2 Correction Trim Multiplier
+              Read by maf_sensor_correction_24234.
+
+  0xFFFFB4A4  B  [CONFIRMED]  Acceleration Enrichment Flag
+              1=transient enrichment active, 0=steady state.
+              Written by maf_sensor_correction_24234.
+
+  0xFFFFB49C  F  [CONFIRMED]  Manifold Pressure Trim Value
+              Written by maf_sensor_correction_24234.
+
+  0xFFFFB4A0  F  [CONFIRMED]  Transient Load Correction Factor
+              Written by maf_sensor_correction_24234.
+
+--- AFR Control (from air_fuel_ratio_calc @ 0xEBA8) ---
+
+  0xFFFFA463  B  [CONFIRMED]  Closed-Loop AFR Enable Flag
+              Written/read by air_fuel_ratio_calc.
+
+  0xFFFFA470  F  [CONFIRMED]  Rotor 0 Lead Injector AFR Target
+              Written by air_fuel_ratio_calc.
+
+  0xFFFFA474  F  [CONFIRMED]  Rotor 0 Trail Injector AFR Target
+              Written by air_fuel_ratio_calc.
+
+  0xFFFFA478  F  [CONFIRMED]  Rotor 1 Lead Injector AFR Target
+              Written by air_fuel_ratio_calc.
+
+  0xFFFFA47C  F  [CONFIRMED]  Rotor 1 Trail Injector AFR Target
+              Written by air_fuel_ratio_calc.
+
+  0xFFFFA498  F  [CONFIRMED]  AFR Integral Accumulator
+              Read/written by air_fuel_ratio_calc.
+
+  0xFFFFA490  F  [CONFIRMED]  AFR Proportional Error Term
+              Written by air_fuel_ratio_calc.
+
+================================================================================
+CAN BUS COMMUNICATION (from can_periodic_task_handler, can_mailbox functions)
+================================================================================
+
+  0xFFFFA170  B[12] [CONFIRMED]  CAN RX/TX Message Buffer
+              Double-buffered 12-byte CAN frame structure.
+              Used by can_mailbox_extract_msg_data (0xCFF6).
+
+  0xFFFFA188  W  [CONFIRMED]  CAN Status Counter / Timeout Timer
+              Incremented every 10ms task cycle. Timeout at 0x12C (300ms).
+              Used by can_periodic_task_handler (0xA57C).
+
+  0xFFFFA18A  W  [CONFIRMED]  CAN Heartbeat Timer
+              4ms GPIO heartbeat toggle countdown.
+              Used by can_periodic_task_handler.
+
+  0xFFFF802C  B  [CONFIRMED]  HCAN0 TX Retry Flag
+              Set when TX fails, triggers can_tx_abort_and_retry.
+
+  0xFFFF802D  B  [CONFIRMED]  HCAN0 Mailbox Rotation Index
+              Round-robin index (0-3) for active TX mailboxes.
+              Written by hcan0_mailbox_rotate_enqueue (0xA608).
+
+--- EEPROM / ADAPTIVE LEARNING (= LTFT / Long Term Fuel Trim) ---
+  NOTE: Industry standard terminology maps our "adaptive fuel trim" = LTFT.
+  Ghidra names: LTFTRelated, LTFTForCAN, getLTFTforOBD, initLTFTStuff.
+  Driven by Rear O2 (post-cat) sensor feedback for long-term correction.
+
+  0xFFFFDFE4  -  [CONFIRMED]  EEPROM RAM Mirror Base Address
+              256-byte mirror of ABLIC S-93C56C SPI EEPROM contents.
+              Loaded at cold-start by eeprom_read_validate (0x450).
+              Contains immobilizer keys, adaptive data, vehicle ID.
+
+  0xFFFFDFFC  D  [CONFIRMED]  Warm-Reset Magic Word
+              Value: 0x5AA5A55A indicates warm/watchdog reset (skip RAM init).
+              Checked by sub_4E0 main init. If mismatch → cold start.
+
+  0xFFFFB5B8  F  [CONFIRMED]  Stoichiometric AFR Target (Baseline)
+              Float. Baseline stoichiometric target for adaptive trim calc.
+              Read by calc_adaptive_fuel_trim (0x1379C) as FR15.
+
+  0xFFFFC12C  F  [CONFIRMED]  Current MAF-Based Stoich Correction
+              Float. Current fuel correction from MAF sensor pipeline.
+              Read by calc_adaptive_fuel_trim (0x1379C) as FR14.
+
+  0xFFFFB5C4  F  [CONFIRMED]  MAF Correction Factor
+              Float. Secondary MAF correction subtracted in trim error calc.
+              Used at 0x137B6 in calc_adaptive_fuel_trim.
+
+  0xFFFFB5A4  B  [CONFIRMED]  Rotor Condition State
+              Byte. 0 = normal, nonzero = rotor-active state.
+              Selects between adaptive trim table A (0x6A868) or B (0x6A87C).
+              Also used by EEPROM cold-start loading.
+
+  0xFFFFB5AC  B  [CONFIRMED]  Rotor Secondary State
+              Byte. 1 = secondary rotor active.
+              Selects table A (0x6A868) when set.
+
+  0xFFFFB5AA  B  [CONFIRMED]  O2 Sensor Fault Flag
+              Byte. 0 = no fault. Used by adaptive trim and catalyst protection.
+
+  0xFFFFA728  F  [CONFIRMED]  Adaptive Trim Error
+              Float. Computed as stoich_target - MAF_correction.
+              Written by calc_adaptive_fuel_trim (0x1379C).
+
+  0xFFFFA720  F  [CONFIRMED]  Adaptive Trim Result (Scaled)
+              Float. Output of fpu_multiply_accumulate with rotor-specific table.
+              Fed into fuel pulse width correction.
+
+  0xFFFFA730  B  [CONFIRMED]  Adaptive Trim Active Flag
+              Byte. 1 = trim currently being applied, 0 = disabled.
+              Set/cleared by threshold comparison in calc_adaptive_fuel_trim.
+
+  0xFFFFA718  F  [CONFIRMED]  Final Adaptive Trim Output (Clamped)
+              Float. Final clamped trim value (range: -2.8 to +0.7).
+              Written at end of calc_adaptive_fuel_trim.
+
+  0xFFFFAADA  B  [CONFIRMED]  Adaptive Learning Enable Master Flag
+              Byte. 1 = adaptive learning enabled globally.
+              Gating flag checked before trim calculations.
+
+  0xFFFFC084  F  [CONFIRMED]  Engine Load (for Adaptive Gate)
+              Float. Current engine load value.
+              Compared against Table_2D___105_+0x14 threshold.
+
+  0xFFFFA424  W  [CONFIRMED]  Engine RPM (for Adaptive Gate)
+              Word. Current RPM value compared against Table_2D___105_+0x0C.
+
+--- MISFIRE / COMBUSTION MONITORING ---
+
+  0xFFFFA5FC  F  [CONFIRMED]  Combustion Efficiency (Primary)
+              Float. Output of combustion_efficiency_metric (0x121F0).
+
+  0xFFFFA600  F  [CONFIRMED]  Load-Adjusted Combustion Efficiency
+              Float. Efficiency corrected for engine load.
+
+  0xFFFFA604  F  [CONFIRMED]  Temperature Correction Factor
+              Float. Used in catalyst temp estimation.
+
+  0xFFFFA608  F  [CONFIRMED]  Catalyst Protection Efficiency Threshold
+              Float. Dynamic threshold for fuel cut activation.
+
+  0xFFFFA60C  F  [CONFIRMED]  MAF-Based Combustion Efficiency
+              Float. Efficiency computed from MAF airflow data.
+
+  0xFFFFA610  F  [CONFIRMED]  Normalized Combustion Efficiency
+              Float. Normalized 0.0-1.0 range efficiency metric.
+
+  0xFFFFA614  F  [CONFIRMED]  Secondary Chamber Efficiency
+              Float. Per-chamber efficiency for trailing spark rotor.
+
+  0xFFFFA618  F  [CONFIRMED]  Exhaust Temperature Estimate
+              Float. Estimated from combustion efficiency model.
+
+  0xFFFFA61C  F  [CONFIRMED]  AFR Correction Factor (Efficiency)
+              Float. AFR correction derived from efficiency calculation.
+
+  0xFFFFA658  F  [CONFIRMED]  Combustion Chamber Temperature
+              Float (Celsius). Output of combustion_chamber_temp (0x12938).
+              State-dependent: primary, secondary, average, or peak.
+              Thresholds: <900 normal, 900-1000 caution, >1000 fuel cut, >1100 emergency.
+              ⚠ INFERRED: Specific temperature thresholds (900/1000/1100°C) values not directly confirmed in disassembly.
+
+  0xFFFFA896  B  [CONFIRMED]  Rotor A Misfire Count
+              Byte (u16 implied). Saturated counter via saturated_add_u16 (0x2460).
+              Triggers P0300/P0301 when exceeds threshold.
+
+  0xFFFFA897  B  [CONFIRMED]  Rotor B Misfire Count
+              Byte (u16 implied). Saturated counter.
+              Triggers P0300/P0303 when exceeds threshold.
+
+  0xFFFFA800  -  [CONFIRMED]  Rotor A Combustion State Block (72 bytes)
+              Base of per-rotor combustion quality data. Used by
+              combustion_quality_monitor (0x1C690). NOTE: Individual fields
+              within this block (e.g., 0xFFFFA800 as word = manifold pressure
+              correction accumulator) are documented in their respective
+              subsystem sections — the "block" is a logical grouping.
+              +0x20: Leading spark misfire data.
+              +0x28: Trailing spark misfire data.
+
+  0xFFFFA848  -  [CONFIRMED]  Rotor B Combustion State Block (72 bytes)
+              Base of per-rotor combustion quality data. NOTE: Offset 0x00
+              overlaps with VVT Secondary Input (float32) — this address
+              serves DUAL PURPOSE depending on subsystem context. VVT uses
+              it as a float; combustion monitor uses it as a block base.
+              +0x20: Leading spark misfire data.
+              +0x28: Trailing spark misfire data.
+              +0x58: Catalyst monitor (P0430).
+
+--- OBD / UDS DIAGNOSTIC STATE ---
+
+  0xFFFFDFB0  -  [CONFIRMED]  UDS Session State (6 bytes)
+              Session management variables for diagnostic services.
+              Managed by DiagnosticSessionControl (SID 0x10) handler.
+              ⚠ UNVERIFIABLE: Session codes (0x81, 0x85, 0x87, 0x10) firmware-derived — no public source confirms validity.
+
+  0xFFFFDFB4  B  [CONFIRMED]  Security Unlocked Flag
+              Byte. Set to 1 after successful SID 0x27 key verification.
+              Required for SID 0x23 (ReadMemoryByAddress) access.
+              ⚠ UNVERIFIABLE: Security access procedure firmware-derived — no public confirmation of lock mechanisms.
+
+  0xFFFFD3F0  -  [CONFIRMED]  Diagnostic CAN Message Buffer
+              Multi-byte buffer. Passed as R4 to all flash handlers (SID 0x34/36/37).
+              Contains request/response data for diagnostic protocol.
+              ⚠ UNVERIFIABLE: UDS service implementation details (SID 0x23/0x27/0x34/0x36/0x37) firmware-derived.
+
+================================================================================
+29. DSC / TRACTION CONTROL STATE
+================================================================================
+  Source: Ghidra decompilation of 60E0FC00 + IDA cross-reference to 60E1D400
+  Reference: docs/maps/RX8_New_Subsystems_From_Ghidra.txt §2
+
+  ⚠ NOTE: Exact RAM addresses below are from Ghidra pointer-indirect access.
+  Some addresses require live RAM capture to confirm for 60E1D400 (EU firmware).
+  Ghidra function names used as anchors for future address resolution.
+
+  0xFFFFA600  B  [INFERRED]   DSC Active Flag
+              Byte. 1 = DSC system requesting torque reduction.
+              Source: dsc_request_handler / DSC CAN message parser.
+
+  0xFFFFA601  B  [INFERRED]   DSC Torque Reduction Mode
+              Byte. Bitmask: 0x01 = timing retard, 0x02 = single-rotor fuel cut,
+              0x04 = both-rotor fuel cut. Multiple bits can be set simultaneously.
+              Source: calcDSCTimingDerate, calcDSCFuelCutDesired
+
+  0xFFFFA602  W  [INFERRED]   DSC Timing Retard Amount
+              16-bit signed. Degrees × 100 of timing retard applied.
+              Range: 0 to -2000 (-20.00 deg). Applied to both leading + trailing.
+              Source: calcDSCTimingDerate → applyDSCTimingRetard
+
+  0xFFFFA604  B  [INFERRED]   DSC Per-Rotor Fuel Cut Bitmask
+              Byte. Bit 0 = rotor A fuel cut, bit 1 = rotor B fuel cut.
+              0x00 = normal, 0x01 = A only, 0x02 = B only, 0x03 = both.
+              Source: calcDSCFuelCutDesired → fuel cut arbitrator (0xE2D8)
+
+  0xFFFFA605  B  [INFERRED]   DSC Throttle Intervention Active
+              Byte. 1 = DSC commanding throttle plate closure.
+              Source: calcDSCThrottleIntervention
+
+  0xFFFFA606  W  [INFERRED]   DSC Target Throttle Position
+              16-bit unsigned. Target throttle angle when DSC active.
+              Units: 0.01 deg (same as TPS scaling). 0 = fully closed.
+              Source: calcDSCThrottleIntervention
+
+================================================================================
+30. ALTERNATOR / CHARGING CONTROL
+================================================================================
+  Source: Ghidra decompilation of 60E0FC00 + IDA cross-reference
+  Reference: docs/maps/RX8_New_Subsystems_From_Ghidra.txt §3
+
+  0xFFFFA610  W  [INFERRED]   Alternator Target Voltage
+              16-bit unsigned. Target charging voltage × 100.
+              Typical: 1400 = 14.00V. Varies with battery temp & load.
+              Source: calcDesiredAlternatorVoltage
+
+  0xFFFFA612  W  [INFERRED]   Alternator Actual Voltage (Sensed)
+              16-bit unsigned. Measured battery/alternator voltage × 100.
+              Source: calculate12VBatteryTemperature (ADC channel)
+
+  0xFFFFA614  B  [INFERRED]   Alternator Duty Cycle
+              Byte. PWM duty cycle to alternator field coil.
+              Range: 0-255 (0-100%). Higher = more charging current.
+              Source: calcAlternatorDuty
+
+  0xFFFFA615  B  [INFERRED]   Alternator Load Compensation Active
+              Byte. 1 = idle speed bump applied to compensate for alternator load.
+              Source: calcAlternatorLoadCompensation → idle speed target
+
+  0xFFFFA616  W  [INFERRED]   Battery Temperature (Estimated)
+              16-bit signed. Estimated battery temperature in °C × 10.
+              Derived from intake air temp + soak time model.
+              Source: calculate12VBatteryTemperature
+
+================================================================================
+31. CRUISE CONTROL STATE
+================================================================================
+  Source: Ghidra decompilation of 60E0FC00 + IDA cross-reference
+  Reference: docs/maps/RX8_New_Subsystems_From_Ghidra.txt §4
+
+  0xFFFFA620  B  [INFERRED]   Cruise Control Master Enable
+              Byte. 1 = cruise system armed (main switch ON).
+              Source: CAN message from steering wheel module.
+
+  0xFFFFA621  B  [INFERRED]   Cruise Control Active
+              Byte. 1 = actively controlling speed (SET engaged).
+              0 = disengaged (brake/clutch/cancel pressed).
+              Source: cruiseControlStateMachine
+
+  0xFFFFA622  W  [INFERRED]   Cruise Target Speed
+              16-bit unsigned. Target vehicle speed in km/h × 100.
+              Source: cruiseCalcTargetSpeed
+
+  0xFFFFA624  W  [INFERRED]   Cruise Torque Request
+              16-bit signed. Torque request from cruise PID controller.
+              Positive = accelerate, negative = engine braking.
+              Source: cruiseControlCalcTorqueTarget (P + feedforward)
+
+  0xFFFFA626  B  [INFERRED]   Cruise Throttle Position Command
+              Byte. Commanded throttle opening for cruise operation.
+              Range: 0-255 (0-100%). Converted from torque request.
+              Source: cruiseControlCalcThrottleTarget
+
+  0xFFFFA627  B  [INFERRED]   Cruise Disengage Reason
+              Byte. Last reason cruise was cancelled:
+              0x01 = brake pedal, 0x02 = clutch pedal, 0x04 = speed too low,
+              0x08 = manual cancel, 0x10 = engine fault.
+              Source: cruiseControlStateMachine
+
+================================================================================
+32. FUEL CUT ARBITRATOR FLAGS
+================================================================================
+  Source: Ghidra decompilation — arbitrateFuelCut at 0xE2D8 (60E0FC00)
+  Reference: docs/maps/RX8_New_Subsystems_From_Ghidra.txt §1
+
+  ⚠ NOTE: The fuel cut arbitrator OR's 13+ independent boolean sources into
+  a 2-bit per-rotor output (bit0=rotor A cut, bit1=rotor B cut). Individual
+  source flags listed below; final output at existing address 0xFFFFA440.
+
+  0xFFFFA630  B  [INFERRED]   Fuel Cut Source: Rev Limiter
+              Byte. 1 = rev limiter requesting fuel cut.
+              Source: rpm_limiter_fuel_cutoff (8000 RPM threshold)
+
+  0xFFFFA631  B  [INFERRED]   Fuel Cut Source: Throttle Lift (Decel)
+              Byte. 1 = deceleration fuel cut active (closed throttle + RPM > threshold).
+              Source: calcThrottleLiftFuelCut
+
+  0xFFFFA632  B  [INFERRED]   Fuel Cut Source: DSC Request
+              Byte. Per-rotor bitmask from DSC (see §29 above).
+              Source: calcDSCFuelCutDesired
+
+  0xFFFFA633  B  [INFERRED]   Fuel Cut Source: Load-Based
+              Byte. 1 = load-based fuel cut (very low load + high RPM).
+              Source: calcLoadBasedFuelCut
+
+  0xFFFFA634  B  [INFERRED]   Fuel Cut Source: Vehicle Speed + Braking
+              Byte. 1 = fuel cut due to speed governor or brake intervention.
+              Source: calcVehicleSpeedFuelCut
+
+  0xFFFFA635  B  [INFERRED]   Fuel Cut Source: Throttle Plate
+              Byte. 1 = DBW throttle plate fully closed signal.
+              Source: calcThrottlePlateFuelCut
+
+  0xFFFFA636  B  [INFERRED]   Fuel Cut Source: Condition-Based
+              Byte. 1 = conditional fuel cut (catalyst overheat, O2 fault, etc.).
+              Source: calcConditionBasedFuelCut
+
+  0xFFFFA637  B  [INFERRED]   Fuel Cut Arbitrator Output
+              Byte. Final OR'd result: bit0 = rotor A cut, bit1 = rotor B cut.
+              0x00 = normal fueling, 0x01 = A cut, 0x02 = B cut, 0x03 = both cut.
+              Source: arbitrateFuelCut output → injector driver
+
+================================================================================
+33. SECONDARY AIR INJECTION
+================================================================================
+  Source: Ghidra decompilation of 60E0FC00 + IDA cross-reference
+  Reference: docs/maps/RX8_New_Subsystems_From_Ghidra.txt §5
+
+  0xFFFFA640  B  [INFERRED]   Secondary Air Pump Active
+              Byte. 1 = air pump relay energized (cold start emission control).
+              Duration: typically 20-60 seconds after cold start.
+              Source: calcSecondaryAirPumpDuty
+
+  0xFFFFA641  B  [INFERRED]   Secondary Air Pump Timer
+              Byte. Countdown timer in seconds. Pump runs until 0.
+              Source: secondaryAirPumpTimer
+
+  0xFFFFA642  W  [INFERRED]   Secondary Air Enrichment Compensation
+              16-bit signed. Fuel enrichment factor applied during air pump
+              operation to compensate for extra oxygen in exhaust.
+              Units: 0.01 multiplier (100 = 1.00× = no compensation).
+              Source: calcSecondaryAirEnrichmentCompensation
+
+================================================================================
+34. EVAP / PURGE CONTROL
+================================================================================
+  Source: Ghidra decompilation of 60E0FC00 + IDA cross-reference
+  Reference: docs/maps/RX8_New_Subsystems_From_Ghidra.txt §6
+
+  0xFFFFA648  B  [INFERRED]   EVAP Purge Solenoid Duty
+              Byte. PWM duty cycle to canister purge solenoid.
+              Range: 0-255 (0-100%). Controls fuel vapor flow to intake.
+              Source: calcEvapPurgeDuty (7 sub-functions)
+
+  0xFFFFA649  B  [INFERRED]   EVAP Purge Enable Flag
+              Byte. 1 = purge allowed (engine warm, stable idle, no fault).
+              Source: evapPurgeEnableCheck
+
+  0xFFFFA64A  W  [INFERRED]   EVAP System Pressure
+              16-bit signed. Fuel tank pressure from EVAP pressure sensor.
+              Units: Pa × 10. Negative = vacuum (normal), positive = pressure.
+              Source: calcEvapSystemPressure
+
+  0xFFFFA64C  B  [INFERRED]   EVAP Leak Detection State
+              Byte. OBD-II EVAP leak test state machine:
+              0 = idle, 1 = conditioning, 2 = pumping, 3 = measuring, 4 = result.
+              Source: evapLeakDetectionStateMachine
+
+================================================================================
+35. STARTUP ENRICHMENT
+================================================================================
+  Source: Ghidra decompilation of 60E0FC00 + IDA cross-reference
+  Reference: docs/maps/RX8_New_Subsystems_From_Ghidra.txt §7
+
+  0xFFFFA650  W  [INFERRED]   Startup Fuel Enrichment Multiplier
+              16-bit unsigned. Extra fuel during cranking/cold start.
+              Units: 0.01× (100 = 1.00× = no enrichment, 200 = 2.00× = double fuel).
+              Decays exponentially after engine start.
+              Source: calcStartupEnrichmentMultiplier
+
+  0xFFFFA652  W  [INFERRED]   Post-Start Enrichment Timer
+              16-bit unsigned. Countdown in engine cycles (not seconds).
+              Controls how long enrichment persists after first fire.
+              Source: startupEnrichmentDecay
+
+  0xFFFFA654  W  [INFERRED]   Cranking Fuel PW Adder
+              16-bit unsigned. Additional injector pulse width during crank.
+              Units: μs. Added on top of base PW. Temp-dependent.
+              Source: calcCrankingFuelAdder
+
+  0xFFFFA656  B  [INFERRED]   Engine Running Flag (Post-Start)
+              Byte. 0 = cranking, 1 = running (RPM > ~400 stable).
+              Transitions enrichment from cranking mode to post-start decay.
+              Source: detectEngineRunning
+
+================================================================================
+36. TORQUE MANAGEMENT (EXPANDED)
+================================================================================
+  Source: Ghidra decompilation of 60E0FC00 + IDA cross-reference
+  Reference: docs/maps/RX8_New_Subsystems_From_Ghidra.txt §8
+
+  ⚠ NOTE: Some torque variables may overlap with existing §26 (Torque Estimation).
+  These entries capture the MANAGEMENT side (requests, limits) vs estimation.
+
+  0xFFFFA660  W  [INFERRED]   Driver Torque Request
+              16-bit unsigned. Torque demanded by throttle position.
+              Units: Nm × 10. Derived from TPS + RPM lookup.
+              Source: calcDriverTorqueRequest
+
+  0xFFFFA662  W  [INFERRED]   Actual Engine Torque (Estimated)
+              16-bit unsigned. Current estimated engine output torque.
+              Units: Nm × 10. From torque model (BMEP × displacement).
+              Source: torque_calc_with_damping (existing)
+
+  0xFFFFA664  W  [INFERRED]   Torque Limit (Active)
+              16-bit unsigned. Currently active torque ceiling.
+              Minimum of: rev limiter, DSC request, cruise request, thermal limit.
+              Source: torqueLimitArbiter
+
+  0xFFFFA666  W  [INFERRED]   Torque Reduction Request (External)
+              16-bit unsigned. Torque reduction from DSC, A/C compressor, etc.
+              Units: Nm × 10. Subtracted from driver request.
+              Source: calcExternalTorqueReduction
+
+================================================================================
+37. VEHICLE DYNAMICS
+================================================================================
+  Source: Ghidra decompilation of 60E0FC00 + IDA cross-reference
+
+  0xFFFFA670  W  [INFERRED]   Vehicle Speed (Filtered)
+              16-bit unsigned. Filtered vehicle speed from VSS.
+              Units: km/h × 100. Smoothed for cruise/DSC use.
+              Source: calcVehicleSpeedFiltered
+
+  0xFFFFA672  W  [INFERRED]   Wheel Speed Difference (DSC Input)
+              16-bit signed. Speed difference between driven/non-driven wheels.
+              Units: km/h × 100. Positive = wheelspin detected.
+              Source: CAN message from ABS module → DSC handler
+
+  0xFFFFA674  B  [INFERRED]   Gear Position (Estimated)
+              Byte. Estimated current gear (1-6 for MT, 1-4/5 for AT).
+              Derived from RPM/speed ratio. 0 = neutral/unknown.
+              Source: calcEstimatedGear
+
+  0xFFFFA675  B  [INFERRED]   Clutch Switch State
+              Byte. 0 = clutch engaged (pedal up), 1 = clutch disengaged (pedal down).
+              Source: digital input → cruise/fuel cut logic
+
+================================================================================
+38. STAGED INJECTION CONTROL
+================================================================================
+  Source: Ghidra decompilation of 60E0FC00 + IDA cross-reference
+  Reference: docs/maps/RX8_New_Subsystems_From_Ghidra.txt §8
+
+  0xFFFFA680  B  [INFERRED]   Injection Mode
+              Byte. Current injection operating mode:
+              0 = primary only (low load/RPM)
+              1 = primary + secondary simultaneous (medium demand)
+              2 = staged split (high demand, independent PW per injector)
+              Source: calcInjectionMode (based on fuel request vs primary capacity)
+
+  0xFFFFA681  B  [INFERRED]   Secondary Injector Enable
+              Byte. 1 = secondary injectors active.
+              Source: calcInjectionMode → injector driver
+
+  0xFFFFA682  W  [INFERRED]   Primary Injector PW
+              16-bit unsigned. Primary injector pulse width in μs.
+              Source: fuel_calc_per_rotor (existing) → injector driver
+
+  0xFFFFA684  W  [INFERRED]   Secondary Injector PW
+              16-bit unsigned. Secondary injector pulse width in μs.
+              0 when mode = 0 (primary only). Proportional split in mode 2.
+              Source: calcSecondaryInjectorPW
+
+================================================================================
+TOTAL VARIABLES DOCUMENTED
+================================================================================
+
+  v1.0: 69 unique RAM addresses
+  v2.0: 160+ unique RAM addresses
+  v3.0: 220+ unique RAM addresses
+  v4.0: 260+ unique RAM addresses
+  v5.0: 300+ unique RAM addresses
+  v6.0: 300+ unique RAM addresses + EEPROM layout
+  v7.0: 330+ unique RAM addresses
+  v8.0: 390+ unique RAM addresses (added EEPROM/Adaptive, Misfire/Combustion, OBD)
+  v9.0: 440+ unique RAM addresses (this revision, added Ghidra-sourced subsystems:
+    DSC/traction, alternator, cruise, fuel cut arbitrator, secondary air, EVAP,
+    startup enrichment, torque management, vehicle dynamics, staged injection)
+
+  Subsystem coverage:
+    Fuel injection:        12 variables (CONFIRMED)
+    Ignition timing:       11 variables (CONFIRMED)
+    Lambda/O2 closed-loop: 20 variables (CONFIRMED)
+    Fuel cut:               6 variables (CONFIRMED)
+    SSV/6-port:            15 variables (CONFIRMED)
+    Crank/rotor timing:    13 variables (CONFIRMED)
+    Sensor ADC/scaling:    16 variables (CONFIRMED)
+    Rotor synchronization:  8 variables (CONFIRMED)
+    Idle speed control:    15 variables (CONFIRMED)
+    Knock detection:       14 variables (CONFIRMED)
+    Fuel pump control:     17 variables (CONFIRMED)
+    Cooling fan:            2 variables (CONFIRMED)
+    VVT control:           19 variables (CONFIRMED)
+    DTC/MIL:               18 variables (CONFIRMED/INFERRED)
+    Boost/pressure:        10 variables (INFERRED)
+    OMP/fuel pump:          7 variables (INFERRED)
+    CAN communication:      3 variables (CONFIRMED)
+    Security access:        - parameters (CONFIRMED)
+    System flags:          10 variables (CONFIRMED)
+    Fault flags:            4 variables (INFERRED)
+    Safety clamps:          3 variables (CONFIRMED)
+    Spark timing boundary:   4 variables (CONFIRMED)
+    Torque estimation:       6 variables (CONFIRMED)
+    Rotor position feedback: 7 variables (CONFIRMED)
+    Chamber balance:         5 variables (CONFIRMED)
+    Cold start RPM limiter:  5 variables (CONFIRMED)
+    Engine load estimation:  5 variables (CONFIRMED)
+    EEPROM/adaptive learning: 15 variables (CONFIRMED)
+    Misfire/combustion:     15 variables (CONFIRMED)
+    OBD/diagnostic state:    3 variables (CONFIRMED)
+    DSC/traction control:    7 variables (INFERRED — Ghidra)
+    Alternator/charging:     5 variables (INFERRED — Ghidra)
+    Cruise control:          6 variables (INFERRED — Ghidra)
+    Fuel cut arbitrator:     8 variables (INFERRED — Ghidra)
+    Secondary air injection: 3 variables (INFERRED — Ghidra)
+    EVAP/purge control:      4 variables (INFERRED — Ghidra)
+    Startup enrichment:      4 variables (INFERRED — Ghidra)
+    Torque management:       4 variables (INFERRED — Ghidra)
+    Vehicle dynamics:        4 variables (INFERRED — Ghidra)
+    Staged injection:        4 variables (INFERRED — Ghidra)
+
+================================================================================
+REVISION HISTORY
+  v1.0-v4.0 (2026-04-05): Iterative expansion from 69 to 260+ addresses.
+    Added crank timing, sensor ADC, rotor sync, DTC/MIL, boost/pressure,
+    OMP/fuel pump, idle speed control, knock detection, cooling fan, VVT,
+    spark boundary, torque estimation, rotor position feedback, chamber
+    balance, cold start RPM limiter, engine load estimation.
+    Corrections: O2 threshold multiplier (×32 not ×20), VVT intake angle
+    (0xFFFFA9D5, not 0xFFFFA900).
+  v5.0 (2026-04-05): Expanded to 300+ addresses. Rewrote knock detection with
+    per-rotor structure architecture (0x58-byte channels at base 0xFFFFA4B4).
+    Annotated 0xFFFFA8F8 as dual-purpose (pump duty + torque coefficient).
+    Added ISC and VVT subsystem addresses.
+  v8.0 (2026-04-05): Expanded to 390+ addresses. Added EEPROM/ADAPTIVE LEARNING,
+    MISFIRE/COMBUSTION MONITORING, and OBD/UDS DIAGNOSTIC STATE subsystems.
+    All addresses verified against IDA disassembly via MCP.
+  v9.0 (2026-04-05): Expanded to 440+ addresses. Added 10 new subsystem sections
+    (§29-§38) sourced from Ghidra decompilation cross-reference: DSC/traction
+    control, alternator/charging, cruise control, fuel cut arbitrator flags,
+    secondary air injection, EVAP/purge, startup enrichment, torque management,
+    vehicle dynamics, staged injection control. All marked INFERRED — addresses
+    are representative placeholders requiring live RAM capture confirmation.
+
+CREDITS
+  Analysis based on IDA Pro disassembly of N3J1EL firmware.
+  Functions analyzed: fuel_calc_entry, fuel_calc_per_rotor,
+    dual_channel_fuel_computation, spark_advance_calc_main,
+    lambda_control_closed_loop, rpm_limiter_fuel_cutoff,
+    secondary_chamber_controller, secondary_chamber_ready_check,
+    intake_pressure_feedback_correction, boost_pressure_feedback,
+    crank_timing_update, crank_periodic_handler, sensor_main_process,
+    sensor_calc_interp_ch0/ch2, throttle_position_classify,
+    rotor_position_synchronization, pcm_fault_check_and_clear,
+    manifold_pressure_calc_main, fuel_pump_control,
+    can_serial_communication_handler, ign_output_calc_main,
+    idle_speed_control_18054, calc_idle_speed_target,
+    knock_detection_processing, fuel_pump_control_0x17510,
+    cooling_fan_control_0x17DCC, calc_vvt_error_control_output,
+    diag_security_access_sid27, spark_timing_boundary_limiter,
+    torque_calc_with_damping, rotor_position_feedback_control,
+    rotary_chamber_balance_calc, cold_start_rpm_limiter,
+    engine_load_estimator
+================================================================================

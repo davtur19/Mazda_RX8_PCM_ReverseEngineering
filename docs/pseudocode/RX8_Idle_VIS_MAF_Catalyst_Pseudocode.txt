@@ -375,7 +375,7 @@ PURPOSE:
   requiring independent spark and fuel timing per rotor).
 
 INPUT REGISTERS/FLAGS:
-  - 0xFFFFA428: Cylinder selector (0=rotor A, 1=rotor B, etc.)
+  - 0xFFFFA428: Rotor selector (0=rotor A, 1=rotor B, etc.)
   - 0xFFFFB5A4: Current fuel map selection
   - 0x6E5DC+3: Idle fuel constant (max rotor count, typically 1 for 2-rotor RX-8)
   - 0xFFFFADA: Cold-start flag
@@ -391,20 +391,20 @@ OUTPUT REGISTERS:
 PSEUDOCODE:
   ```
   void channel_idle_fuel_controller() {
-    u8 cylinder = *(u8*)0xFFFFA428;
+    u8 rotor_channel = *(u8*)0xFFFFA428;
     u8 fuel_map = *(u8*)0xFFFFB5A4;
     u8 idle_fuel_max_rotors = *(u8*)0x6E5DF;  // Typically 1 for 2-rotor
     float idle_fuel_constant = *(float*)(0x15D04);
 
     extu_b(idle_fuel_max_rotors);
 
-    // Check if cylinder within rotor range (max 1 for 2-rotor)
+    // Check if rotor_channel within rotor range (max 1 for 2-rotor)
     if (idle_fuel_max_rotors > 1) {
       u8 cold_flag = *(u8*)0xFFFFADA;
 
       // Rotor-specific cold-start check
       if (cold_flag != 0) {
-        u8 active_rotor = (cylinder == 1) ? 0 : 1;
+        u8 active_rotor = (rotor_channel == 1) ? 0 : 1;
       } else {
         u8 active_rotor = 1;
       }
@@ -430,7 +430,7 @@ PSEUDOCODE:
     }
 
     // Normal idle fuel path (rotor 1)
-    if (cylinder == 1) {
+    if (rotor_channel == 1) {
       // Check engine mode
       u8 engine_mode = *(u8*)0xFFFFAAE0;
       if (engine_mode != 0) {
@@ -1103,7 +1103,7 @@ INPUT REGISTERS/FLAGS:
   - 0xFFFFA6DD: Catalyst overheat flag (1=cooling active)
   - 0xFFFFA6B6: Some status indicator
   - 0xFFFFBFD4: Catalyst protection mode (1=enabled)
-  - 0xFFFFA428: Engine mode / cylinder selector
+  - 0xFFFFA428: Engine mode / rotor selector
   - 0x6F700: Catalyst setpoint temperature (ROM constant)
   - 0xFFFFA7BC: Current exhaust gas temperature estimate
   - 0xFFFFB5B8: Engine RPM (context for EGT estimation)
@@ -1328,7 +1328,7 @@ STATE MACHINE DESCRIPTION:
 INPUT REGISTERS/FLAGS:
   - 0xFFFFA9D4: Raw O2 sensor voltage (from ADC)
   - 0xFFFFA9DD: Current state register
-  - 0xFFFFA428: Engine mode / cylinder count
+  - 0xFFFFA428: Engine mode / rotor count
   - Fault inputs & pressure state machine (multiple addresses)
 
 OUTPUT REGISTERS (State & Fuel Commands):

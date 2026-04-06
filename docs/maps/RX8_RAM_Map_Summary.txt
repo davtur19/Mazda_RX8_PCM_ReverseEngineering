@@ -111,14 +111,14 @@ FUNCTIONAL AREA BREAKDOWN
 
 5. KNOCK DETECTION & CONTROL
    └─ 0xFFFFA4A4–0xFFFFA571 (205 bytes)
-      • Per-cylinder knock detection state
+      • Per-rotor knock detection state
       • Knock magnitude calculations
       • Adaptive spark retard control
       • Knock recovery timer
 
    Key Variables:
    ├─ 0xFFFFA4A4–0xFFFFA4AE: Rev Limiter State (current RPM, thresholds)
-   ├─ 0xFFFFA4B4–0xFFFFA571: Knock Detection Block (2 cylinders × 25 bytes each)
+   ├─ 0xFFFFA4B4–0xFFFFA571: Knock Detection Block (2 rotors × 25 bytes each)
    └─ 0xFFFFA564: Knock Counter (total knock events detected)
 
    Related Functions:
@@ -267,7 +267,7 @@ ATOMIC OPERATIONS (MUST NOT BE INTERRUPTED):
     - Task state flags (0xFFFFA1C0–0xFFFFA1C9): Read-Modify-Write cycles
     - Rotor timing state (0xFFFFA1D8–0xFFFFA208): Accessed by interrupt + main
     - Lambda PID state (0xFFFFA328–0xFFFFA38C): Requires consistent snapshot
-    - Knock detection (0xFFFFA4B4–0xFFFFA571): Per-cylinder counter updates
+    - Knock detection (0xFFFFA4B4–0xFFFFA571): Per-rotor counter updates
 
 UPDATE FREQUENCIES:
     - Sensor state: Every ADC cycle (≈10ms)
@@ -275,7 +275,7 @@ UPDATE FREQUENCIES:
     - Ignition timing: Every 10-50ms
     - Lambda PID: Every 100-200ms
     - CAN messages: Every 100-300ms (300ms periodic cycle)
-    - Knock detection: Per-cylinder at crank angle (≈2.5ms at 6000 RPM)
+    - Knock detection: Per-rotor at eccentric shaft angle (≈2.5ms at 6000 RPM)
 
 INITIALIZATION:
     - Cold boot: All RAM cleared by cold_start_ram_init (0x5B0)

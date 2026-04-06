@@ -1,0 +1,302 @@
+================================================================================
+MAZDA RX-8 S1 PCM (N3J1EL) - MAF/AFR SENSOR QUICK REFERENCE
+================================================================================
+
+KEY FUNCTIONS & ADDRESSES:
+
+┌─ MAF LINEARIZATION ─────────────────────────────────────────────────────┐
+│ calc_maf_sensor_flow @ 0x1332C [0x78 bytes]                             │
+│                                                                           │
+│ ROM Tables:  0x69F72 (base)      0x69F86 (temp)   0x69F9A (pressure)    │
+│              0x69FAE (cold-enr)  0x69FC2 (alt)    0x69FD6 (enrich)      │
+│                                                                           │
+│ RAM Flags:   0xFFFFA6B8 (cold-start flag)                               │
+│ RAM Output:  0xFFFFAAE0 (final MAF in g/s) → FEEDS FUEL CALC            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─ MAF CORRECTION (O2 + MANIFOLD) ────────────────────────────────────────┐
+│ maf_sensor_correction_24234 @ 0x24234 [0x16C bytes]                     │
+│                                                                           │
+│ ROM Tables:  0x6ACCE (O2 gain)   0x6ACE4 (pressure scale 1)             │
+│              0x6ACF8 (scale 2)   0x6AD0C (transient)                    │
+│                                                                           │
+│ RAM Inputs:  0xFFFFB3FC (raw MAF)    0xFFFFB33F/0xB340 (O2 status)     │
+│              0xFFFFB5CC (manifold pressure)                              │
+│                                                                           │
+│ RAM Outputs: 0xFFFFB494 (final MAF) → FEEDS AFR CALC                   │
+│              0xFFFFB4A4 (accel flag) → STATE INDICATOR                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─ DUAL-ROTOR AFR CONTROL ────────────────────────────────────────────────┐
+│ air_fuel_ratio_calc @ 0xEBA8 [0x47A bytes]                              │
+│                                                                           │
+│ ROM Parameters:  0xFFFFB5B8 (stoich target)   0xFFFFC12C (MAF correction)│
+│                  0xFFFFB5CC (manifold target) 0x6996E (rotor2 offset)   │
+│                                                                           │
+│ RAM AFR Outputs:                                                         │
+│   0xFFFFA470 = AFR lead rotor1    0xFFFFA474 = AFR trail rotor1        │
+│   0xFFFFA47C = AFR lead rotor2    0xFFFFA484 = AFR trail rotor2        │
+│   0xFFFFA490 = AFR error integral (accumulator for long-term trim)      │
+│   0xFFFFA498 = AFR saturation accumulator                               │
+│                                                                           │
+│ Control Flags:   0xFFFFA463 (closed-loop enable)                        │
+│                  0xFFFFB5A4 (rotor isolation flag)                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+CRITICAL DATA FLOW
+================================================================================
+
+Raw MAF Voltage (ADC)
+        ↓
+[calc_maf_sensor_flow @ 0x1332C]
+        ↓
+    0x69F72-0x69FEA (linearization tables)
+        ↓
+    @0xFFFFAAE0 (final MAF output, g/s)
+        ↓
+[maf_sensor_correction_24234 @ 0x24234]
+        ↓
+    0x6ACCE-0x6AD0C (O2 feedback + manifold pressure)
+        ↓
+    @0xFFFFB494 (corrected MAF) ← PRIMARY SIGNAL FOR AFR
+        ↓
+[air_fuel_ratio_calc @ 0xEBA8]
+        ↓
+    @0xFFFFA470-0xFFFFA488 (AFR for 4 injectors)
+        ↓
+[fuel_calc_entry @ 0x9534]
+        ↓
+    Fuel pulse width → Injector drivers
+
+================================================================================
+ROM CALIBRATION ADDRESSES (HIGH IMPACT)
+================================================================================
+
+HIGHEST PRIORITY (Affects All Operating Conditions):
+  0x69F72-0x69FEA  [~120 bytes] MAF linearization (4 tables)
+  0xFFFFB5B8       [4 bytes]    STOICHIOMETRIC TARGET (14.7:1 nominal)
+  0x6ACE4          [varies]     O2 FEEDBACK GAIN (closed-loop response)
+
+MEDIUM PRIORITY (Load-Specific):
+  0x6ACF8          [varies]     Secondary AFR scaling
+  0x6AD0C          [varies]     Transient enrichment
+  0xFFFFB5CC       [4 bytes]    Manifold pressure target
+  0x6996E          [varies]     Rotor2 stoichiometric offset
+
+DIAGNOSTIC (Normally Fixed):
+  0xFFFFB5A4       [1 byte]     Rotor isolation flag (0=both, 1=single)
+  0xFFFFA463       [1 byte]     Closed-loop enable (usually 1)
+
+================================================================================
+RAM WORKING SPACE (IMPORTANT MONITORING)
+================================================================================
+
+SENSOR STATE CONTROL:
+  0xFFFFA0D8       [40 bytes]   Sensor channel control table (4 channels)
+  0xFFFFA0FC       [4 bytes]    Sensor timing reference
+  0xFFFFA100       [4 bytes]    RPM scaling divisor
+
+MAF/CORRECTION WORKING:
+  0xFFFFB3FC       [4 bytes]    RAW MAF input
+  0xFFFFB494       [4 bytes]    CORRECTED MAF output ← CRITICAL
+  0xFFFFB4A4       [1 byte]     Acceleration flag (0=normal, 1=enriching)
+  0xFFFFB48C       [4 bytes]    Base MAF uncorrected (reference)
+
+AFR CALCULATION WORKING:
+  0xFFFFA470-488   [28 bytes]   AFR for 4 injectors + status
+  0xFFFFA498       [1 byte]     AFR accumulator (integral trim)
+  0xFFFFA4A0       [varies]     Boundary check flags
+
+O2 FEEDBACK STATUS:
+  0xFFFFB33F       [1 byte]     O2 feedback enable flag 1
+  0xFFFFB340       [1 byte]     O2 feedback enable flag 2
+  0xFFFFB332       [4 bytes]    O2 correction trim factor
+  0xFFFFA463       [1 byte]     Closed-loop status master
+
+================================================================================
+TYPICAL OPERATING VALUES (For Verification)
+================================================================================
+
+0xFFFFB5B8 (Stoichiometric):    0x41700000 (14.75 AFR)  [Bosch MAF typical]
+0x6ACE4 (O2 Gain):              0x3F800000 (1.0x)       [Nominal]
+0xFFFFB494 (Corrected MAF):     0x40C00000-0x41A00000   (6.0-20.0 kg/h @ cruise)
+0xFFFFA470 (AFR Result):         0x41700000-0x41A00000   (14.75-20.0 AFR)
+
+Abnormal If:
+  0xFFFFB494 = 0x40000000 (2.0) ← Severe underflow (sensor dead?)
+  0xFFFFB494 = 0x42000000 (32) ← Severe overflow (sensor stuck high?)
+  0xFFFFA498 > 0xFF ← AFR integral saturated (tuning issue)
+  0xFFFFA463 = 0 ← Closed-loop OFFLINE (emergency limp mode)
+
+================================================================================
+SENSOR PROCESSING FRAMEWORK
+================================================================================
+
+GENERAL SENSOR FUNCTIONS (Used by MAF + others):
+
+sensor_main_process @ 0x9070 [0x84 bytes]
+  Multiplexes 4 sensor channels
+  Calls sensor_interp_calc or sensor_channel_update per state
+  State machine @ 0xFFFFA0D8 (4 channels × 8 bytes)
+
+sensor_interp_calc @ 0x91FE [0x246 bytes]
+  Complex CAM-synchronized interpolation (full path)
+  Used for primary sensors, includes spike filtering
+  Channel state = 2
+
+sensor_channel_update @ 0x914C [0xB2 bytes]
+  Simple delta-only processing (fast path)
+  Used for secondary sensors
+  Channel state = 1
+
+sensor_read_and_filter @ 0x8E60 [0xBE bytes]
+  ADC acquisition pipeline with priority checks
+  Feeds data to sensor_main_process
+
+sensor_filter_apply @ 0x9478 [0x50 bytes]
+  Robust filtering for spike suppression
+  Called by interpolation when delta exceeds threshold
+
+================================================================================
+WANKEL-SPECIFIC CONSIDERATIONS
+================================================================================
+
+Problem #1: Two Combustion Events Per Revolution
+  → MAF sees doubled frequency vs. conventional piston 4-stroke
+  → Solution: Tables 0x69F72-0x69FEA calibrated for Wankel pulse pattern
+  → Impact: Using reciprocating-engine MAF tables = severe rich/lean shift
+
+Problem #2: Rotor Temperature Asymmetry
+  → Leading rotor ~200°C, trailing rotor ~150°C (cruise condition)
+  → Solution: Separate AFR targets via rotor2 offset @ 0x6996E
+  → Impact: Single AFR target = rotor2 inefficiency, emissions
+
+Problem #3: Intake Manifold Geometry
+  → Asymmetric porting = unequal charge distribution
+  → Solution: Manifold pressure compensation @ 0x6ACF8, 0x6AD0C
+  → Impact: Ignoring = poor idle quality, surging
+
+Critical Flag:
+  0xFFFFB5A4 = Rotor isolation (0=dual-rotor operation, 1=single rotor for diagnostics)
+
+================================================================================
+COLD-START ENRICHMENT PATH
+================================================================================
+
+Triggered When:  @(0xFFFFA6B8) == 1  (Cold-start flag)
+
+Enrichment Sequence:
+  1. Load @(0x69FAE) → Multiply MAF by cold-start factor 1
+  2. Load @(0x69FC2) → Add cold-start curve
+  3. Load @(0x69FD6) → Add enhanced enrichment
+  4. Load @(0x69FEA) → Final post-processing
+
+Expected Behavior:
+  Cold-start (< 20°C):  Stoich × 1.5-2.0 (very rich for ignition)
+  Warm-up (20-60°C):    Stoich × 1.2-1.5 (moderate enrichment)
+  Warm (> 60°C):        Stoich × 1.0-1.1 (nominal to slightly rich)
+
+Diagnostic:
+  If cold-start is stuck:  Check @(0xFFFFA6B8) = 1
+  If cold-start too rich:  Adjust 0x69FAE, 0x69FC2, 0x69FD6 down
+  If cold-start too lean:  Adjust above tables up
+
+================================================================================
+TYPICAL TUNING WORKFLOW
+================================================================================
+
+STEP 1: Verify baseline (dyno fuel consumption @ WOT)
+  → Measure actual AFR with wideband O2
+  → Compare to 0xFFFFB5B8 reading (stoich target)
+  → If mismatch > 10%, recalibrate 0xFFFFB5B8
+
+STEP 2: Optimize closed-loop response (cruise steady-state)
+  → Verify 0xFFFFA463 == 1 (closed-loop enabled)
+  → Check 0xFFFFB33F or 0xB340 (O2 sensor online)
+  → Adjust 0x6ACE4 (O2 gain) if convergence is too fast/slow
+  → Target: ±0.5 AFR oscillation within 5 seconds
+
+STEP 3: Cold-start smoothness (30-70°C)
+  → Verify 0xFFFFA6B8 cold-start flag cycles properly
+  → Log 0xFFFFB494 (corrected MAF) vs. load
+  → Adjust 0x69FAE-0x69FEA if stumble/surge occurs
+  → Verify no stall < 1000 RPM
+
+STEP 4: Transient enrichment (WOT ramp)
+  → Monitor 0xFFFFB4A4 (accel flag)
+  → Verify 0xFFFFB4A0 (transient correction) > 0 during pedal
+  → Adjust 0x6AD0C if bog/hesitation detected
+
+STEP 5: Emissions validation (dyno 4-gas)
+  → CO should be 0.2-0.5%  → Adjust 0xFFFFB5B8 richer if too high
+  → HC should be < 100 ppm → Adjust cold-start richness
+  → NOx should be < 800 ppm → Adjust transient lean if possible
+
+================================================================================
+COMMON ISSUES & DIAGNOSTICS
+================================================================================
+
+SYMPTOM: Engine running rich (black soot, high CO)
+  CAUSE: 0xFFFFB5B8 too high or 0x69FAE stuck enrichment
+  CHECK: @(0xFFFFB494) reading (should be < 0x41A00000)
+  FIX:   Decrease 0xFFFFB5B8 by 0.5 AFR, or reduce 0x69FAE
+
+SYMPTOM: Engine running lean (detonation, white spark plugs)
+  CAUSE: 0xFFFFB5B8 too low or 0x6ACE4 overcorrecting
+  CHECK: @(0xFFFFA498) saturation accumulator (should be < 0x80)
+  FIX:   Increase 0xFFFFB5B8 by 0.5 AFR, reduce 0x6ACE4 gain
+
+SYMPTOM: Idle surge/surging (800-1200 RPM)
+  CAUSE: Transient enrichment oscillating via 0x6AD0C
+  CHECK: @(0xFFFFB4A4) fluttering (should be 0 at idle)
+  FIX:   Smooth 0x6AD0C table or increase deadband in sensor filter
+
+SYMPTOM: Cold start stall (< 20°C)
+  CAUSE: 0x69FAE-0x69FEA enrichment insufficient
+  CHECK: @(0xFFFFA6B8) = 1 for 5+ seconds after cranking
+  FIX:   Increase cold-start tables by 0.2-0.3 AFR richness
+
+SYMPTOM: Check Engine Light - P0100 (MAF sensor malfunction)
+  CAUSE: 0xFFFFB494 out of expected range or changing too fast
+  CHECK: dtc_p0100_maf_46DA0 function sets DTC if plausibility fails
+  FIX:   Verify MAF sensor wiring, check linearization table 0x69F72
+
+SYMPTOM: Asymmetric rotor wear/fouling
+  CAUSE: 0x6996E (rotor2 stoich offset) mistuned
+  CHECK: Plug #1 vs #2 fouling pattern
+  FIX:   Adjust 0x6996E to richen rotor2 if fouled, or lean if glazed
+
+================================================================================
+REFERENCE: Function Calls & Call Sites
+================================================================================
+
+calc_maf_sensor_flow @ 0x1332C
+  Called From: Fuel calculation dispatcher
+  Calls: Interpolation functions @ 0x69F72-0x69FEA (inline)
+
+maf_sensor_correction_24234 @ 0x24234
+  Called From: fuel_pressure_calc main loop
+  Calls: fpu_multiply_accumulate, fpu_compare_and_select
+
+air_fuel_ratio_calc @ 0xEBA8
+  Called From: Main fuel control pipeline
+  Calls: fpu_multiply_accumulate, fpu_div_float, saturated_add_u8/u16
+
+sensor_main_process @ 0x9070
+  Called From: Main sensor task scheduler
+  Calls: sensor_interp_calc, sensor_channel_update
+
+sensor_interp_calc @ 0x91FE
+  Called From: sensor_main_process (state=2 path)
+  Calls: sensor_filter_apply
+
+sensor_channel_update @ 0x914C
+  Called From: sensor_main_process (state=1 path)
+  Calls: write_to_memory_with_fpu_sync
+
+================================================================================
+END OF QUICK REFERENCE
+Generated: April 5, 2026
+Firmware: N3J1EL (Mazda RX-8 S1, MY2004-2008)
+================================================================================

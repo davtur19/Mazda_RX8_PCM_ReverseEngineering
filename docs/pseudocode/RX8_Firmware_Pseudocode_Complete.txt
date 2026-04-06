@@ -1670,13 +1670,16 @@ void serial_can_hardware_init(void)
  * OUTPUTS:
  *   Side effects:
  *   - Increments counter at 0xFFFFA188 (main task timer)
- *   - Enqueues CAN message ID 0xCA if timeout reached
- *   - Enqueues CAN message ID 0xDC if ATU2 capture pending
+ *   - Enqueues CAN TX via hcan0_mailbox_rotate_enqueue on timeout
+ *   - Enqueues CAN TX on ATU2 capture event
  *   - Decrements LED toggle counter at 0xFFFFA18A
  *
- * CAN MESSAGE IDs ENQUEUED:
- *   0xCA : Engine status message (RPM, throttle, fuel)
- *   0xDC : Sensor data message (temperature, O2, knock)
+ * CAN MESSAGE IDs:
+ *   ⚠ CORRECTED: The values 0xCA and 0xDC passed to hcan0_mailbox_rotate_enqueue
+ *   are internal mailbox/queue slot identifiers, NOT CAN bus arbitration IDs.
+ *   Actual Mazda CAN arbitration IDs confirmed via Ghidra cross-validation:
+ *   TX: 0x201 (RPM+speed+throttle), 0x203 (engine status), 0x420 (MIL), etc.
+ *   RX: 0x212, 0x216, 0x430, 0x4B0, 0x4C0, etc. Range: 0x41-0x650.
  *
  * KEY REGISTER ADDRESSES:
  *   0xFFFFA188  : Main task counter (16-bit, incremented each call)
@@ -1687,9 +1690,9 @@ void serial_can_hardware_init(void)
  * NOTES:
  *   - Counter wraps at 0x12C (300 decimal), triggering message enqueue
  *   - If ATU2 capture detected (atu2_any_capture_pending returns 1),
- *     enqueues message 0xDC with full table update
+ *     enqueues additional CAN message
  *   - LED toggle counter starts at 4, decrements to 0, then resets to 4
- *   - 5-bit argument 0xFFFFFFFF passed to hcan0_mailbox_rotate_enqueue
+ *   - Argument 0xFFFFFFFF passed to hcan0_mailbox_rotate_enqueue
  *     (selects round-robin mailbox mode)
  *
  */
@@ -1714,10 +1717,11 @@ void can_periodic_task_handler(void)
     // === Timeout Check (300ms threshold) ===
     current_count = *task_counter;
     if (current_count > 0x12C) {  // 300 decimal
-        // Timeout reached: enqueue message 0xCA (main status)
+        // Timeout reached: enqueue CAN TX
         // Call hcan0_mailbox_rotate_enqueue(0xCA, 0xFFFFFFFF)
-        // r4 = message ID (0xCA)
+        // r4 = 0xCA (internal queue/mailbox slot ID, NOT CAN arb ID)
         // r5 = mode/flags (0xFFFFFFFF = use all mailboxes)
+        // ⚠ Actual CAN arb IDs are 0x201, 0x203, etc. (see Ghidra cross-validation)
         hcan0_mailbox_rotate_enqueue(0xCA, 0xFFFFFFFF);
 
         // Infinite loop (stub) - actually returns to scheduler
@@ -1729,7 +1733,7 @@ void can_periodic_task_handler(void)
     atu2_pending = atu2_any_capture_pending();
 
     if (atu2_pending == 1) {
-        // Enqueue message 0xDC (sensor data)
+        // Enqueue CAN TX (0xDC = internal queue slot, NOT CAN arb ID)
         hcan0_mailbox_rotate_enqueue(0xDC, 0xFFFFFFFF);
     }
 
@@ -2756,16 +2760,22 @@ void can_enable_mailbox_int(uint8_t hcan_selector)
 REGISTER AND MESSAGE ID REFERENCE
 ================================================================================
 
-CAN MAILBOX MESSAGE IDs (Standard 11-bit Identifiers):
-   0xCA (202) : Engine Status Message
-               - RPM, throttle position, fuel status
-               - Broadcast at 10 Hz from can_periodic_task_handler
-               - Payload: [RPM_H:8, RPM_L:8, TPS:8, fuel_status:8, ...]
+CAN MESSAGE IDs:
+   ⚠ CORRECTED (2026-04-05): Values 0xCA and 0xDC previously documented here
+   are INTERNAL mailbox/queue slot identifiers, NOT CAN bus arbitration IDs.
 
-   0xDC (220) : Sensor Data Message
-               - Engine temperature, O2 sensor, knock detection
-               - Transmitted on ATU2 capture event
-               - Payload: [coolant_temp:8, o2_sensor:8, knock_count:8, ...]
+   Actual Mazda CAN Arbitration IDs (confirmed via Ghidra cross-validation):
+   TX from ECU:
+     0x201 : Engine RPM (bytes 0-1) + vehicle speed (4-5) + throttle (6) + status (7)
+     0x203 : Engine status pack
+     0x215, 0x231, 0x240, 0x250, 0x251 : TX data packs
+     0x420 : MIL/check-engine lamp status (confirmed for CAN)
+     0x620, 0x630, 0x650 : Additional TX packs
+     0x41  : TX pack
+   RX to ECU:
+     0x212 : RX main handler
+     0x216 : RX with plausibility check + fault eval + timer
+     0x430, 0x47, 0x4B0, 0x4B1, 0x4C0 : RX unpack handlers
 
 HCAN0 HARDWARE SFR ADDRESSES:
    0xFFFF8000 : HCAN0 Control Register (CTLR) - write 0x55AA for reset
@@ -2823,11 +2833,11 @@ KNOCK DETECTION & CONTROL SUBSYSTEM (0xF770 - 0xFA8E)
 ================================================================================
 
 // FUNCTION: knock_detection_processing (0xF770) SIZE: 0x320 | NAME VERIFIED: YES
-// MAIN KNOCK DETECTION ENGINE - Per-cylinder knock analysis with pulse window comparison
+// MAIN KNOCK DETECTION ENGINE - Per-channel knock analysis with pulse window comparison
 // The rotary has 2 rotors with 3 faces each, so knock patterns differ from piston engines.
 //
 // INPUTS:
-//   - r4 = cylinder channel index (0-3, maps to rotor face)
+//   - r4 = rotor channel index (0-3, maps to rotor face)
 //   - RAM base: 0xFFFFA4B4 (per-channel knock state structures, 0x58 bytes each)
 //   - Knock enabled flag: 0xFFFFA571 (1=enabled, 0=disabled)
 //
@@ -2840,7 +2850,7 @@ KNOCK DETECTION & CONTROL SUBSYSTEM (0xF770 - 0xFA8E)
 // GLOBAL COUNTER: 0xFFFFA564 (u16) - saturated knock event counter
 //
 // ALGORITHM:
-//   Phase 1: Normalize channel index, compute period offset = ch * 0x1E0000
+//   Phase 1: Normalize rotor channel index, compute period offset = ch * 0x1E0000
 //   Phase 2: Check 0xFFFFA571 enable flag. If disabled, clear all state.
 //   Phase 3: Init per-channel structures (2 × 0x58 bytes), set threshold = 0x1680000
 //   Phase 4: First pass - measure knock via pulse_window_compute(), find max level,
@@ -3052,15 +3062,15 @@ LAMBDA / O2 FEEDBACK CONTROL SUBSYSTEM (0xC508 - 0xC988)
 //   0xFFFFA370: P error | 0xFFFFA330: gated P | 0xFFFFA32C: filtered delta
 //   0xFFFFA348: prev setpoint | 0xFFFFA350: integral accum array
 //   0xFFFFA358/35C/360: integrator outputs | 0xFFFFA364: final correction
-//   0xFFFFA368: per-cylinder output | 0xFFFFA324: CL status (0=OL, 1=CL)
-//   0xFFFFA381: threshold multiplier (×20 scale per cylinder)
+//   0xFFFFA368: per-rotor output | 0xFFFFA324: CL status (0=OL, 1=CL)
+//   0xFFFFA381: threshold multiplier (×20 scale per rotor)
 //   0xFFFFA38C: disable flag (1=open-loop)
 void lambda_control_closed_loop(uint8_t cyl_event) {
   if (read_byte(0xFFFFA38C)) return;  // Open-loop mode
   
   uint8_t cyl = cyl_event >= 12 ? cyl_event - 12 : cyl_event;
-  
-  // Match cylinder to O2 sensor pair
+
+  // Match rotor to O2 sensor pair
   uint8_t match = find_o2_sensor_pair(cyl, 0xDBA6, 0xDBA8);
   if (match == 1) {
     atu_schedule_event_from_adc();
@@ -3089,8 +3099,8 @@ void lambda_control_closed_loop(uint8_t cyl_event) {
   // 3. DERIVATIVE ANALOG
   float delta = gated - read_float(0xFFFFA348);
   write_float(0xFFFFA32C, fpu_abs_float(delta));
-  
-  // 4. PER-CYLINDER AFR CORRECTION
+
+  // 4. PER-ROTOR AFR CORRECTION
   float* afr = (float*)0xFFFFA334;
   float corr = read_float(0xFFFFA344);
   float* trim = (float*)0xFFFFA33C;

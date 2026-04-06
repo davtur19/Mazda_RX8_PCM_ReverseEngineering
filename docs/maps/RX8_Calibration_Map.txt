@@ -284,7 +284,7 @@ Ignition Dwell Time:
   Ignition_Dwell_Time___axis (alt) @ 0x7CB20, 36 bytes
   Ignition_Dwell_Time_ @ 0x7CB20, 404 bytes
     Description: Coil charging time vs RPM/Load
-    Units: Milliseconds or degrees of crankshaft rotation
+    Units: Milliseconds or degrees of eccentric shaft rotation
     Typical Range: 4-8 ms
 
 Additional Ignition Tables (Numbered):

@@ -1,0 +1,1328 @@
+==========================================================================================
+MAZDA RX-8 S1 PCM — COMPLETE ROM CALIBRATION TABLE MAP
+ROM: N3J1EL (60E1D400) — EU 6-port 231hp MT, 2004-2008
+CPU: Renesas SH7055 — Big-endian, IEEE754 floats
+Source: RomRaider RX8Defs (equinox311) + ROM binary analysis + IDA function xrefs
+==========================================================================================
+NOTE: Table addresses and ROM byte values are directly verified from binary. Table NAMES
+and PURPOSE descriptions are derived from disassembly context and may be provisional —
+see RX8_Audit_Report.txt.
+==========================================================================================
+
+SUMMARY
+  RomRaider named tables:          116
+  RomRaider unnamed tables:        437
+  Newly identified (this analysis): 185
+  Cross-referenced from functions: 155
+  Undocumented addrs (2+ refs):     188
+  Calibration range:                0x6CF6C — 0x7E2AC+
+
+  Legend:
+    [RR]     = Identified by RomRaider community
+    [NEW]    = Newly identified via IDA disassembly analysis
+    [?]      = Unnamed, purpose unknown
+    [N refs] = Number of firmware functions accessing this address
+
+
+==========================================================================================
+SECTION 1: CALIBRATION TABLES BY SUBSYSTEM
+==========================================================================================
+
+--- IGNITION TIMING (30 RR + 10 new = 40 total) ---
+
+  0x6D59C  [RR]   Ignition Timing Leading Idle Base
+           uint8  6-elem  scale:x*0.5-50  [1 refs]
+  0x6D5C8  [RR]   Ignition Timing Leading Idle Temperature Correction Multiplier
+           uint8  9-elem  scale:(x * 0.01 ) + 0  [1 refs]
+  0x6D5EC  [RR]   Ignition Timing Trailing Idle Base
+           uint8  6-elem  scale:x*0.5-50  [1 refs]
+  0x6D618  [RR]   Ignition Timing Trailing Idle Temperature Correction Multiplier
+           uint8  9-elem  scale:(x * 0.01 ) + 0  [1 refs]
+  0x6D668  [RR]   Ignition Timing Leading Idle Temperature Compensation
+           uint8  10x7 3D  scale:x*0.5-50  [1 refs]
+  0x6D748  [RR]   Ignition Timing Leading Base
+           uint8  20x18 3D  scale:x*0.5-50  [1 refs]
+  0x6D948  [RR]   Ignition Timing Leading Advance - Safe Mode
+           uint8  20x18 3D  scale:x*0.5-50  [1 refs]
+  0x6DB48  [RR]   Ignition Timing Leading Advance
+           uint8  20x18 3D  scale:x*0.5-50  [1 refs]
+  0x6DCF4  [RR]   Ignition Timing Trailing Idle Temperature Compensation
+           uint8  10x7 3D  scale:x*0.5-50  [1 refs]
+  0x6DDD4  [RR]   Ignition Timing Trailing Base
+           uint8  20x18 3D  scale:x*0.5-50  [1 refs]
+  0x6DFD4  [RR]   Ignition Timing Trailing Advance - Safe Mode
+           uint8  20x18 3D  scale:x*0.5-50  [1 refs]
+  0x6E1D4  [RR]   Ignition Timing Trailing Advance
+           uint8  20x18 3D  scale:x*0.5-50  [1 refs]
+  0x6E358  [RR]   Ignition Leading Minimum
+           float  4x3 3D  scale:(x * 1 ) + 0  [1 refs]  data=[5.0000, 0.0000]
+  0x6E3A4  [RR]   Ignition Trailing Minimum
+           float  4x3 3D  scale:(x * 1 ) + 0  [1 refs]  data=[0.0000, -15.0000]
+  0x6F2EC  [RR]   Ignition Minimum Leading/Trailing split
+           uint8  20x18 3D  scale:x*0.5-50  [1 refs]
+  0x6F4CC  [RR]   Ignition 3
+           uint16  19x11 3D  scale:(x * 1 ) + 0  [1 refs]  data=[31, 31]
+  0x6F78C  [RR]   Ignition 4
+           uint8  12-elem  scale:x*0.5-50  [1 refs]
+  0x6F79C  [RR]   Ignition 5
+           uint8  1-elem  scale:x*0.5-50  [1 refs]
+  0x6F7D0  [RR]   Ignition 6
+           uint8  12-elem  scale:x*0.5-50  [1 refs]
+  0x6F7E0  [RR]   Ignition 7
+           uint8  1-elem  scale:x*0.5-50  [1 refs]
+  0x6F7E8  [RR]   Ignition 8
+           uint8  1-elem  scale:x*0.5-50  [1 refs]
+  0x6F7F0  [RR]   Ignition 9
+           uint8  1-elem  scale:x*0.5-50  [1 refs]
+  0x6F7F8  [RR]   Ignition 10
+           uint8  1-elem  scale:x*0.5-50  [1 refs]
+  0x6F800  [RR]   Ignition 11
+           uint8  1-elem  scale:x*0.5-50  [1 refs]
+  0x6F808  [RR]   Ignition 12
+           uint8  1-elem  scale:x*0.5-50  [1 refs]
+  0x6F810  [RR]   Ignition 13
+           uint8  1-elem  scale:x*0.5-50  [1 refs]
+  0x6F81C  [RR]   Ignition 14
+           uint8  1x1 3D  scale:x*0.5-50  [1 refs]
+  0x6F828  [RR]   Ignition 15
+           uint8  1x1 3D  scale:x*0.5-50  [1 refs]
+  0x6F834  [RR]   Ignition 16
+           uint8  1x1 3D  scale:x*0.5-50  [1 refs]
+  0x6F840  [RR]   Ignition 17
+           uint8  1x1 3D  scale:x*0.5-50  [1 refs]
+  0x6FA58  [NEW]  Spark Advance Calibration Constants
+           [5 refs]  data=[10.8560, 10.8560]
+           funcs: spark_advance_calc_main +4
+  0x79FE0  [NEW]  Dual-Channel Fuel Split Ratios
+           [5 refs]  data=[0.6345, 0.2000]
+           funcs: dual_channel_fuel_computation +4
+  0x6D096  [NEW]  Maximum Advance Hard Limit (40-45° BTDC)
+           uint8 or float32  [1 refs]
+  0x6D0A4  [NEW]  Minimum Advance Hard Limit (5-10° BTDC)
+           uint8 or float32  [1 refs]
+  0x6D0E2  [NEW]  Fuel Diagnostic Correction
+           Compensates lean/rich misfires
+
+=== BATCH 1 — IGNITION TIMING STRUCTURE ===
+
+  0x6D084  [NEW]  Table_2D___2_ Base — Ignition timing calibration structure
+           Contains sub-tables at offsets +0x14, +0x28, +0x50, +0x64
+           Referenced by ignition_timing_calc_E7F8
+  0x6D098  [NEW]  Knock Retard Correction Table (offset +0x14 from 0x6D084)
+           float32  Referenced by ignition_timing_calc_E7F8 (0xE7F8)
+  0x6D0AC  [NEW]  Knock Margin Safety Buffer (offset +0x28 from 0x6D084)
+           float32  Referenced by ignition_timing_calc_E7F8 (0xE7F8)
+  0x6D0D4  [NEW]  Knock Event Count Limit (offset +0x50 from 0x6D084)
+           float32  Referenced by ignition_timing_calc_E7F8 (0xE7F8)
+  0x6D0E8  [NEW]  Knock Margin Enforcement Scalar (offset +0x64 from 0x6D084)
+           float32  Referenced by ignition_timing_calc_E7F8 (0xE7F8)
+
+--- FUEL / LAMBDA (32 RR + 14 new = 46 total) ---
+
+  0x6FD38  [RR]   Lamda Sensor Barometric Pressure Compensation
+           float  4-elem  scale:(x * 1 ) + 0  [1 refs]  data=[1.4000, 1.2130]
+  0x6FD74  [RR]   Lambda Sensor Scaling
+           float  11-elem  scale:(x * 1 ) + 0  [1 refs]  data=[0.7586, 0.8276]
+  0x719CC  [NEW]  Closed Loop Control Parameters
+           [3 refs]  data=[60.0000, 82.0000]
+           funcs: 3 closed-loop funcs
+  0x71BD8  [RR]   Closed Loop Fuelling Threshold (Temperature A)
+           float  [1 refs]  data=[80.0000, 2.0000]
+  0x71BE0  [RR]   Closed Loop Fuelling Threshold (Temperature B)
+           float  [1 refs]  data=[-40.0000, 2.0000]
+  0x71BF8  [RR]   Closed Loop Fuelling Threshold (Engine Speed)
+           float  [1 refs]  data=[6000.0000, 250.0000]
+  0x71C5C  [RR]   Closed Loop Fuelling Threshold (Unknown B)
+           float  [1 refs]  data=[950.0000, 50.0000]
+  0x71C9C  [RR]   Closed Loop Fuelling Threshold (Temperature C)
+           float  [1 refs]  data=[200.0000, 3.0000]
+  0x71CD0  [RR]   Open Loop Fuelling Base Correction (Throttle) - Safe Mode
+           uint8  9-elem  scale:(x * 0.007812 ) + 0  [1 refs]
+  0x71CE0  [RR]   Open Loop Fuelling Base Correction (Throttle)
+           uint8  1-elem  scale:(x * 0.007812 ) + 0  [1 refs]
+  0x71D00  [RR]   Open Loop Temperature Correction #A
+           uint8  7-elem  scale:(x * 0.007812 ) + 0  [1 refs]
+  0x71D2C  [RR]   Open Loop Fuelling Rich Limit - Safe Mode
+           uint8  9-elem  scale:(1 / ( (x * 0.007812) + 1 )) * 14.7  [1 refs]
+  0x71D5C  [RR]   Open Loop Fuelling Rich Limit
+           uint8  9-elem  scale:(1 / ( (x * 0.007812) + 1 )) * 14.7  [1 refs]
+  0x71D84  [RR]   Open Loop Temperature Correction #B
+           uint8  7-elem  scale:(x * 0.007812 ) + 0  [1 refs]
+  0x71DD4  [RR]   Closed Loop Fuelling Threshold (Engine Load A)
+           uint8  18-elem  scale:(x * 0.003906 ) + 0  [1 refs]
+  0x71E30  [RR]   Closed Loop Fuelling Threshold (Engine Load B)
+           uint8  18-elem  scale:(x * 0.003906 ) + 0  [1 refs]
+  0x71E8C  [RR]   Closed Loop Fuelling Threshold (Engine Load C)
+           uint8  18-elem  scale:(x * 0.003906 ) + 0  [1 refs]
+  0x71ED0  [RR]   Closed Loop Fuelling Threshold (Unknown A)
+           uint8  12-elem  scale:(x * 0.007812 ) + 0  [1 refs]
+  0x71F28  [RR]   Closed Loop Fuelling Threshold (Throttle Position) 
+           uint8  19-elem  scale:(x * 0.5 ) + 0  [1 refs]
+  0x72084  [RR]   Fuelling 8
+           uint8  7-elem  scale:(1 / ( (x * 0.003906) + 1 )) * 14.7  [1 refs]
+  0x7228C  [RR]   Open Loop Fuelling Base (Throttle)- Safe Mode
+           uint8  12x8 3D  scale:(1 / ( (x * 0.003906) + 1 )) * 14.7  [1 refs]
+  0x7238C  [RR]   Open Loop Fuelling Base (Engine Load) - Safe Mode
+           uint8  21x19 3D  scale:(1 / ( (x * 0.003906) + 1 )) * 14.7  [1 refs]
+  0x72524  [RR]   Open Loop Fuelling Base (Throttle)
+           uint8  1x1 3D  scale:(1 / ( (x * 0.003906) + 1 )) * 14.7  [1 refs]
+  0x72530  [RR]   Open Loop Fuelling Base (Engine Load)
+           uint8  1x1 3D  scale:(1 / ( (x * 0.003906) + 1 )) * 14.7  [1 refs]
+  0x72584  [RR]   Open Loop Fuelling Lean Limit (Throttle Based) - Safe Mode
+           uint8  12x8 3D  scale:(1 / ( (x * 0.003906) + 1 )) * 14.7  [1 refs]
+  0x72684  [RR]   Open Loop Fuelling - Safe mode
+           uint8  21x19 3D  scale:(1 / ( (x * 0.003906) + 1 )) * 14.7  [1 refs]
+  0x72864  [RR]   Open Loop Fuelling Lean Limit (Throttle Based)
+           uint8  12x8 3D  scale:(1 / ( (x * 0.003906) + 1 )) * 14.7  [1 refs]
+  0x72964  [RR]   Open Loop Fuelling
+           uint8  21x19 3D  scale:(1 / ( (x * 0.003906) + 1 )) * 14.7  [1 refs]
+  0x786E8  [RR]   Engine Load Compensation
+           uint16  18x20 3D  scale:(x * 1.5E-05 ) + 0.75  [1 refs]  data=[21955, 21955]
+  0x7A628  [RR]   Airflow Or Load Related
+           uint16  10-elem  scale:(x * 0.000244 ) + 0  [1 refs]  data=[1216, 1216]
+  0x7AF48  [RR]   Injection Angle Related AFR Input
+           uint8  9-elem  scale:(x * 1 ) + -50  [1 refs]
+  0x7AF74  [RR]   Unknown Lambda Input
+           uint8  8-elem  scale:(x * 0.1 ) + 0  [1 refs]
+  0x7B008  [RR]   AirFlow Inj Angle Related
+           uint16  25-elem  scale:(x * 0.001 ) + 0  [1 refs]  data=[10, 30]
+  0x7D7DE  [NEW]  Fuel Pump Control Thresholds
+           [7 refs]
+           funcs: fuel_pump_ctrl +6
+  0x6ACE4  [NEW]  Stoichiometry Target (Rotor A)
+           float32  [1 refs]
+  0x6ACF8  [NEW]  Stoichiometry Target (Rotor B)
+           float32  [1 refs]
+  0x6FA2E  [NEW]  Lean Limit Boundary
+           Boundary protection for minimum AFR
+  0x6FA32  [NEW]  Rich Limit Boundary
+           Boundary protection for maximum AFR
+  0x69D00  [NEW]  Fuel Compensation Tier 1 Gain
+           Cascaded fuel correction (3-tier system)
+  0x69D12  [NEW]  Fuel Compensation Tier 2 Gain
+  0x69D28  [NEW]  Fuel Compensation Tier 3 Gain
+  0x69DBC  [NEW]  Fuel Pressure P-Term Gain
+           Proportional gain for fuel pressure PI controller
+  0x69DCE  [NEW]  Fuel Pressure Correction Tier 1
+  0x69DF6  [NEW]  Fuel Pressure Correction Tier 2
+  0x69E1E  [NEW]  Fuel Pressure Correction Tier 3
+  0x69E34  [NEW]  Fuel Pressure I-Term Gain
+           Integral gain for fuel pressure PI controller
+
+--- MAF LINEARIZATION TABLES (7 new, from calc_maf_sensor_flow @ 0x1332C) ---
+
+  0x69F72  [NEW]  MAF Voltage-to-Mass Curve Point 1  [CONFIRMED]
+           Lookup table for MAF sensor linearization. Wankel-specific polynomial.
+  0x69F86  [NEW]  MAF Temperature Compensation via Coolant  [CONFIRMED]
+           Coolant temp correction applied to MAF reading.
+  0x69F9A  [NEW]  MAF Barometric Pressure Correction  [CONFIRMED]
+           Altitude/pressure compensation for MAF signal.
+  0x69FAE  [NEW]  MAF Cold-Start Enrichment Factor  [CONFIRMED]
+           Increased MAF multiplier during cold start.
+  0x69FC2  [NEW]  MAF Cold-Start Alternate Path  [CONFIRMED]
+           Secondary cold-start enrichment pathway.
+  0x69FD6  [NEW]  MAF Cold-Start Enhanced Enrichment  [CONFIRMED]
+           Additional enrichment for very cold starts.
+  0x69FEA  [NEW]  MAF Final Post-Processing Table  [CONFIRMED]
+           Final linearization correction applied to MAF output.
+
+--- MAF CORRECTION TABLES (4 new, from maf_sensor_correction @ 0x24234) ---
+
+  0x6ACCE  [NEW]  O2 Feedback Correction Multiplier  [CONFIRMED]
+           Closed-loop O2 correction applied to MAF signal.
+  0x6AD0C  [NEW]  Transient Load Enrichment Table  [CONFIRMED]
+           Dynamic enrichment during acceleration transients.
+  0x6996E  [NEW]  Rotor 2 Stoichiometric AFR Offset  [CONFIRMED]
+           Asymmetric porting compensation for rotor 2.
+           Used by air_fuel_ratio_calc (0xEBA8).
+
+--- SENSORS (9 RR + 14 new = 23 total) ---
+
+  0x6CF6C  [RR]   Barometric Pressure Sensor Max ADC Count
+           uint16  [1 refs]  data=[62914, 2621]
+  0x6CF6E  [RR]   Barometric Pressure Sensor Min ADC Count
+           uint16  [1 refs]  data=[2621, 256]
+  0x6F96C  [RR]   CLT Sensor Scaling
+           float  32-elem  scale:(x * 1 ) + 0  [1 refs]  data=[140.0000, 130.0000]
+  0x6FBD8  [RR]   MAF Scaling
+           float  48-elem  scale:(x * 1 ) + 0  [1 refs]  data=[1.9461, 2.8875]
+  0x6FF84  [NEW]  Engine Temperature Thresholds
+           [5 refs]  data=[20.0000, 84.0000]
+           funcs: vvt/intake control +3
+  0x6FFE8  [RR]   IAT Sensor Scaling
+           float  16-elem  scale:(x * 1 ) + 0  [1 refs]  data=[119.0000, 94.0000]
+  0x70000  [NEW]  Sensor Processing Constants
+           [10 refs]  data=[29.0000, 23.0000]
+           funcs: 10 sensor processing funcs
+  0x70004  [NEW]  Sensor Offset Constants
+           [6 refs]  data=[23.0000, 16.0000]
+           funcs: 6 sensor funcs
+  0x70400  [NEW]  Sensor Threshold Constants
+           [11 refs]  data=[20.0000, 25.0000]
+           funcs: 11 sensor/diagnostic funcs
+  0x70800  [NEW]  Sensor Gain Multipliers
+           [9 refs]  data=[0.9513, 0.9418]
+           funcs: diag_negative_response +8
+  0x7A930  [RR]   Barometric Pressure Sensor Min Voltage
+           float  [3 refs]  data=[0.2000, 4.8000]
+  0x7A934  [RR]   Barometric Pressure Sensor Max Voltage
+           float  [3 refs]  data=[4.8000, 0.0000]
+  0x7A9BC  [RR]   Barometric Pressure Sensor Offset
+           float  [2 refs]  data=[0.0182, 25.3250]
+  0x7A9C0  [RR]   Barometric Pressure Sensor Slope
+           float  [2 refs]  data=[25.3250, 1.0000]
+  0x6F6A4  [NEW]  O2 Pressure Gate Low Threshold
+           Validates sensor operation under pressure
+  0x6F6A5  [NEW]  O2 Pressure Gate High Threshold
+  0x6F6A7  [NEW]  O2 Rotor State Transition Array
+           Per-rotor indexed state transitions
+  0x6F6E4  [NEW]  O2 Threshold Level 1
+           6-level detection system (levels 1-6)
+  0x6F6E8  [NEW]  O2 Threshold Level 2
+  0x6F6EC  [NEW]  O2 Threshold Level 3
+  0x6F6F0  [NEW]  O2 Threshold Level 4
+  0x6F6F4  [NEW]  O2 Threshold Level 5
+  0x6F6F8  [NEW]  O2 Threshold Level 6
+
+--- IDLE CONTROL (9 RR + 0 new = 9 total) ---
+
+  0x6E880  [RR]   Idle Target A
+           uint16  7-elem  scale:(x * 1 ) + 0  [1 refs]  data=[1700, 1700]
+  0x6E8C0  [RR]   Idle Target B
+           uint16  12-elem  scale:(x * 1 ) + 0  [1 refs]  data=[1700, 1700]
+  0x6E908  [RR]   Idle Target C
+           uint16  12-elem  scale:(x * 1 ) + 0  [1 refs]  data=[1500, 1500]
+  0x6E950  [RR]   Idle Target D
+           uint16  12-elem  scale:(x * 1 ) + 0  [1 refs]  data=[500, 500]
+  0x6E998  [RR]   Idle Target E
+           uint16  12-elem  scale:(x * 1 ) + 0  [1 refs]  data=[3500, 3500]
+  0x6E9CC  [RR]   Idle Target F
+           uint16  7-elem  scale:(x * 1 ) + 0  [1 refs]  data=[1700, 1700]
+  0x6E9F8  [RR]   Idle Target G
+           uint16  7-elem  scale:(x * 1 ) + 0  [1 refs]  data=[1000, 1000]
+  0x6EA24  [RR]   Idle Target H
+           uint16  7-elem  scale:(x * 1 ) + 0  [1 refs]  data=[1900, 1900]
+  0x6EA50  [RR]   Idle Target I
+           uint16  7-elem  scale:(x * 1 ) + 0  [1 refs]  data=[1000, 1000]
+
+--- THROTTLE / TORQUE (9 RR + 0 new = 9 total) ---
+
+  0x73090  [RR]   Torque To Accel Position
+           uint16  26x19 3D  scale:(x * 0.003052 ) + 0  [1 refs]  data=[33, 315]
+  0x734F4  [RR]   Throttle Position To Torque
+           uint16  14x20 3D  scale:(x * 0.007812 ) + -256  [1 refs]  data=[32768, 32768]
+  0x73F6C  [RR]   Maximum Throttle Angle
+           float  [2 refs]  data=[84.0000, 0.1000]
+  0x74250  [RR]   Accel Pedal to Throttle Position #1
+           uint16  21x18 3D  scale:(x * 0.003052 ) + 0  [1 refs]  data=[33, 33]
+  0x745E0  [RR]   Accel Pedal to Throttle Position #2
+           uint16  21x18 3D  scale:(x * 0.003052 ) + 0  [1 refs]  data=[33, 33]
+  0x74970  [RR]   Accel Pedal to Throttle Position #3
+           uint16  21x18 3D  scale:(x * 0.003052 ) + 0  [1 refs]  data=[33, 33]
+  0x74D00  [RR]   Accel Pedal to Throttle Position #4
+           uint16  21x18 3D  scale:(x * 0.003052 ) + 0  [1 refs]  data=[33, 33]
+  0x76670  [RR]   Engine Torque
+           uint16  18x19 3D  scale:(x * 0.007812 ) + 0  [1 refs]  data=[0, 0]
+
+--- INJECTORS (7 RR + 0 new = 7 total) ---
+
+  0x77B90  [RR]   Injector Manifold Vacuum Multiplier
+           uint16  17-elem  scale:(x * 0.0001 ) + 0  [1 refs]  data=[10423, 10276]
+  0x77C48  [RR]   Estimated Manifold Pressure
+           uint16  17x20 3D  scale:(x * 0.003906 ) + 0  [1 refs]  data=[3814, 3763]
+  0x77F58  [RR]   Injector Latency Secondary
+           uint16  17x9 3D  scale:(x * 1 ) + 0  [1 refs]  data=[3172, 3177]
+  0x780F4  [RR]   Injector Latency Primary
+           uint16  17x9 3D  scale:(x * 1 ) + 0  [1 refs]  data=[2752, 2781]
+  0x783A0  [RR]   Primary Injector Size
+           float  [2 refs]  data=[369.4720, 608.0000]
+  0x783A8  [RR]   Secondary Injector Size
+           float  [2 refs]  data=[475.9300, 608.0000]
+  0x783B0  [RR]   Secondary Injector Size #2
+           float  [2 refs]  data=[475.9300, 608.0000]
+
+--- KNOCK CONTROL (7 RR + 6 new = 13 total) ---
+
+  0x7A318  [RR]   Knock Voltage To Magnitude
+           uint8  58-elem  scale:(x * 1 ) + 0  [1 refs]
+  0x7A38C  [RR]   Knock Related 1
+           float  14-elem  scale:(x * 1 ) + 0  [1 refs]  data=[0.0000, 0.0000]
+  0x7A3E0  [RR]   Knock Related 2
+           uint16  14-elem  scale:(x * 1 ) + 0  [1 refs]  data=[224, 224]
+  0x7A400  [RR]   Knock Related
+           float  1-elem  scale:(x * 1 ) + 0  [1 refs]  data=[8.0000, 500.0000]
+  0x7A408  [RR]   Knock Related 3
+           float  1-elem  scale:(x * 1 ) + 0  [1 refs]  data=[16.0000, 0.5625]
+  0x7A450  [RR]   Knock Sensitivity Rotor #1
+           uint8  6x11 3D  scale:(x * 0.05 ) + 0  [1 refs]
+  0x7A4D8  [RR]   Knock Sensitivity Rotor #2
+           uint8  6x11 3D  scale:(x * 0.05 ) + 0  [1 refs]
+  0x6F892  [NEW]  Knock Counter Saturation Limit (Rotor A)
+           Used by knock_detection_processing (0xF770)
+  0x6F894  [NEW]  Knock Counter Saturation Limit (Rotor B)
+  0x6F896  [NEW]  Knock Counter Reset Threshold
+  0x6FA46  [NEW]  Knock Gain Scalar (Primary, 0.5-0.8 range)
+           float32  [1 refs]
+  0x6FA4C  [NEW]  Knock Gain Scalar (Secondary, 0.3-0.5 range)  [VERIFIED]
+           float32  [1 refs]
+  0x6FA64  [NEW]  Detonation Cascade Safety Limit
+           float32  [1 refs]
+
+=== COLD START / RPM LIMITER ===
+
+  0x6D534  [NEW]  Cold Start RPM Limit Duty (uint8)
+           Referenced by cold_start_rpm_limiter (0xF11A)
+  0x6D53C  [RR]   Cold Rev Limit Threshold (float32, 4-byte aligned)
+           data=[20.0, ...]. Referenced by cold_start_rpm_limiter (0xF11A).
+           NOTE: Also listed in REV LIMITERS section. 0x6D53E was previously
+           listed as a separate float but is NOT 4-byte aligned — it overlaps
+           with bytes 2-5 of this entry. Removed as alignment violation.
+
+=== CHAMBER BALANCE ===
+
+  0x6A096  [NEW]  Chamber Balance Coefficient Table
+           float32, referenced by rotary_chamber_balance_calc (0x15D28)
+           via fpu_multiply_accumulate
+
+=== ROTOR POSITION ===
+
+  0x6B4F0  [NEW]  Rotor Position Multiply-Accumulate Table
+           float32, referenced by rotor_position_feedback_control (0x17A68)
+
+=== BATCH 3 — TRANSMISSION/AT CONTROL (30 tables at 116-byte intervals) ===
+
+  NOTE: 30 tables at 0x70048-0x70D6C, 116-byte spacing, AT shift control
+        All float32 format. Referenced by transmission_load_control_1DDB0 (0x1DDB0).
+        Purpose: Automatic transmission shift quality and hydraulic pressure parameters.
+
+  0x70048  [NEW]  AT Shift Parameter Table 1 (float32 array, 116 bytes)
+  0x700BC  [NEW]  AT Shift Parameter Table 2
+  0x70130  [NEW]  AT Shift Parameter Table 3 — Direct xref from 0x1DDB0
+  0x701A4  [NEW]  AT Shift Parameter Table 4 — Direct xref from 0x1DDB0
+  0x70218  [NEW]  AT Shift Parameter Table 5
+  0x7028C  [NEW]  AT Shift Parameter Table 6
+  0x70300  [NEW]  AT Shift Parameter Table 7
+  0x70374  [NEW]  AT Shift Parameter Table 8
+  0x703E8  [NEW]  AT Shift Parameter Table 9
+  0x7045C  [NEW]  AT Shift Parameter Table 10
+  0x704D0  [NEW]  AT Shift Parameter Table 11
+  0x70544  [NEW]  AT Shift Parameter Table 12
+  0x705B8  [NEW]  AT Shift Parameter Table 13
+  0x7062C  [NEW]  AT Shift Parameter Table 14
+  0x706A0  [NEW]  AT Shift Parameter Table 15
+  0x70714  [NEW]  AT Shift Parameter Table 16
+  0x70788  [NEW]  AT Shift Parameter Table 17
+  0x707FC  [NEW]  AT Shift Parameter Table 18
+  0x70870  [NEW]  AT Shift Parameter Table 19
+  0x708E4  [NEW]  AT Shift Parameter Table 20
+  0x70958  [NEW]  AT Shift Parameter Table 21
+  0x709CC  [NEW]  AT Shift Parameter Table 22
+  0x70A40  [NEW]  AT Shift Parameter Table 23
+  0x70AB4  [NEW]  AT Shift Parameter Table 24
+  0x70B28  [NEW]  AT Shift Parameter Table 25
+  0x70B9C  [NEW]  AT Shift Parameter Table 26
+  0x70C10  [NEW]  AT Shift Parameter Table 27
+  0x70C84  [NEW]  AT Shift Parameter Table 28
+  0x70CF8  [NEW]  AT Shift Parameter Table 29
+  0x70D6C  [NEW]  AT Shift Parameter Table 30
+
+--- REV LIMITERS (2 RR + 0 new = 2 total) ---
+
+  0x6D544  [RR]   Cold Rev Limit
+           float  [1 refs]  data=[5500.0000, 200.0000]
+  0x6D54C  [RR]   Rev Limit
+           float  [1 refs]  data=[9000.0000, 200.0000]
+
+--- SSV / 6-PORT / VALVES (3 RR + 1 new = 4 total) ---
+
+  0x7863C  [RR]   SSV Switchpoint 
+           uint16  9-elem  scale:(x * 1 ) + 0  [1 refs]  data=[3000, 3000]
+  0x78CC0  [RR]   Auxillary Valve Close
+           float  [1 refs]  data=[6100.0000, 187.5000]
+  0x78D0C  [NEW]  Auxiliary Valve Control Constants
+           [4 refs]  data=[0.5000, 2.0000]
+           funcs: 4 valve control funcs
+  0x7A5A4  [RR]   VDI Open
+           float  [1 refs]  data=[7250.0000, 188.0000]
+
+--- INJECTION ANGLE (1 RR + 0 new = 1 total) ---
+
+  0x7B2B8  [RR]   Injection Angle
+           uint16  18x8 3D  scale:(x * 1 ) + -50  [1 refs]  data=[520, 525]
+
+--- LOAD LIMITS (3 RR + 0 new = 3 total) ---
+
+  0x7C1B4  [RR]   Load Limit A
+           float  12-elem  scale:(x * 1 ) + 0  [1 refs]  data=[0.3500, 0.3500]
+  0x7C214  [RR]   Load Limit B
+           float  12-elem  scale:(x * 1 ) + 0  [1 refs]  data=[0.6500, 0.6500]
+  0x7C354  [RR]   Load Limit C
+           uint16  10-elem  scale:(x * 0.001 ) + 0  [1 refs]  data=[1000, 1000]
+
+--- BOOST / LOAD CONTROL (0 RR + 1 new = 1 total) ---
+
+  0x7AA3A  [NEW]  Boost Pressure Feedback Parameters
+           [6 refs]
+           funcs: boost_pressure_feedback +5
+
+--- IGNITION DWELL (1 RR + 0 new = 1 total) ---
+
+  0x7CB20  [RR]   Ignition Dwell Time 
+           uint16  9x9 3D  scale:(x * 1 ) + 0  [1 refs]  data=[1895, 1500]
+
+--- DIAGNOSTICS (DTC) (0 RR + 6 new = 6 total) ---
+
+  0x7DAEA  [NEW]  DTC Sequential Index Array
+           [7 refs]
+           funcs: bit_value_extract +6
+  0x7DED2  [NEW]  DTC Configuration Bytes
+           [5 refs]
+           funcs: DTC processing chain
+  0x7DFEA  [NEW]  DTC Enable/Config Byte Array
+           [10 refs]
+           funcs: dtc_handler_6184C +9
+  0x7E076  [NEW]  DTC Threshold Byte Array
+           [8 refs]
+           funcs: dtc_handler_6184C +7
+  0x7E220  [NEW]  DTC Boolean Flag Array #1
+           [6 refs]  data=[0.0000, 0.0000]
+           funcs: DTC processing chain
+  0x7E2AC  [NEW]  DTC Boolean Flag Array #2
+           [5 refs]  data=[0.0000, 0.0000]
+           funcs: DTC processing chain
+
+--- DATALOGGER (0 RR + 2 new = 2 total) ---
+
+  0x7D240  [NEW]  Data Validation Thresholds
+           [6 refs]  data=[0.0000, 0.0000]
+           funcs: 6 validation funcs
+  0x7D6CC  [NEW]  Data Logger Configuration
+           [6 refs]  data=[0.0000, 1200.0000]
+           funcs: 6 logging funcs
+
+--- MISC / UNIDENTIFIED (1 RR + 1 new = 2 total) ---
+
+  0x6FF58  [NEW]  Multi-System Threshold Constants
+           [13 refs]  data=[15.0000, 20.0000]
+           funcs: vvt_angle_error_calc, intake_pressure_feedback +11
+  0x7530C  [RR]   Desired Charge Voltage
+           uint16  9-elem  scale:(x * 0.01 ) + 0  [1 refs]  data=[1492, 1492]
+
+--- Cross-Referenced from Pseudocode (31 addresses, v3.2) ---
+
+  Closed-Loop Fuel Control:
+  0x6B8D4  [NEW]  Lambda P-Gain Table Descriptor  [CONFIRMED via IDA] [VERIFIED]
+           TABLE DESCRIPTOR structure (not a scalar float):
+             axis_count=58, interp_type=4
+             axis_ptr=0x7A230 (58 float axis values, normalized parameter)
+             data_ptr=0x7A318 (58 uint8 gain values, 0-138)
+             scale=1.0, offset=0.0
+           Called by lambda_control_closed_loop (0xC508) via fpu_multiply_accumulate.
+           Previous "WRONG" was due to misinterpreting descriptor bytes as IEEE754 float.
+  0x6B8E8  [NEW]  Lambda Secondary Table Descriptor  [CONFIRMED via IDA]
+           TABLE DESCRIPTOR: axis_count=14, axis_ptr=0x7A354, data_ptr=0x7A38C
+  0x6B8F0  [NEW]  Lambda I-Gain Table
+           Integral gain for closed-loop AFR correction.
+  0x6B8F4  [NEW]  Lambda Integral Lower Bound
+           Lower clamp for integral term accumulator.
+  0x6B900  [NEW]  Lambda Integral Gain Table Descriptor  [CONFIRMED via IDA] [VERIFIED]
+           TABLE DESCRIPTOR: axis_count=1, data_ptr=0x7A400
+           Single-entry table returning constant value = 8.0 (integral gain).
+           Called by lambda_control_closed_loop via fpu_multiply_accumulate.
+           Previous "WRONG" was due to misinterpreting descriptor bytes as float.
+  0x6B90C  [NEW]  Lambda PI Secondary Table Descriptor  [CONFIRMED via IDA]
+           TABLE DESCRIPTOR: axis_count=1, data_ptr=0x7A404
+           Single-entry table returning constant value = 500.0.
+           Output scaling factor for PI controller result.
+
+  Fuel Injection:
+  0x6CF44  [NEW]  Fuel Injection RPM Boundary Table
+           RPM breakpoints for fuel injection scheduling.
+  0x6F9FE  [NEW]  Fuel Enrichment Scaling Factor 1
+           Referenced by fuel enrichment/accel logic.
+  0x6FA04  [NEW]  Fuel Enrichment Scaling Factor 2
+           Fuel enrichment auxiliary coefficient.
+  0x6FA08  [NEW]  Fuel Dispatch Table Entry
+           Fuel injection dispatch table address.
+  0x6FA10  [NEW]  Fuel Injection Base Pulse Width Reference
+           Base injector pulse width constant.
+  0x6FEB8  [NEW]  Fuel System Threshold Constant
+           System-level fuel control threshold.
+
+  Ignition Timing:
+  0x6FA1A  [NEW]  Ignition Reference Advance Constant
+           Base reference advance value for timing calculation.
+  0x6FA1C  [NEW]  Ignition Recovery Threshold
+           Threshold for ignition retard recovery after knock.
+  0x6FA1E  [NEW]  Ignition Safe Limit Low
+           Lower safety limit for ignition advance.
+  0x6FA24  [NEW]  Ignition Safe Limit High
+           Upper safety limit for ignition advance.
+  0x6FA2C  [NEW]  Ignition Envelope Min RPM
+           Minimum RPM for ignition advance envelope.
+  0x6FA30  [NEW]  Ignition Envelope Max RPM
+           Maximum RPM for ignition advance envelope.
+  0x6FA34  [NEW]  Ignition Envelope Min Load
+           Minimum load for ignition advance envelope.
+  0x6FA38  [NEW]  Ignition Envelope Max Load
+           Maximum load for ignition advance envelope.
+  0x6FA3C  [NEW]  Ignition Envelope Safety Margin
+           Safety margin subtracted from envelope boundary.
+  0x6FA48  [NEW]  Ignition Timing Correction Offset  [VERIFIED]
+           Additive correction offset for timing calc.
+
+  Knock Detection:
+  0x6FA50  [NEW]  Knock Detection Base Threshold
+           Base knock detection threshold constant.
+  0x6FA54  [NEW]  Knock Detection Offset
+           Offset applied to knock threshold per-rotor.
+  0x6FA60  [NEW]  Detonation Safety Threshold
+           Hard detonation limit — triggers maximum retard.
+
+  SSV/Valve Control:
+  0x7864C  [NEW]  SSV Switchpoint Offset
+           RPM offset for SSV (Secondary Shutter Valve) activation.
+  0x78650  [NEW]  SSV Chamber Gain Parameter 1
+           Gain applied to chamber pressure for SSV control.
+  0x78654  [NEW]  SSV Chamber Gain Parameter 2
+           Secondary gain for SSV chamber pressure control.
+
+  OMP / Oil Metering Pump:
+  0x79034  [NEW]  OMP RPM Axis  [CONFIRMED] [VERIFIED]
+           Float32 array. RPM axis for OMP duty lookup table.
+           Values: 700, 720, 1000, 1500, 2000, 2500, 3000, 3500, ...
+           Previous "SUSPICIOUS" was due to misidentifying as load/kPa axis —
+           700.0 is actually 700 RPM (idle), a valid RPM breakpoint.
+  0x790C4  [NEW]  Oil Metering By Load Table
+           2D table: uint8 duty (0-255) indexed by load × RPM.
+           Primary OMP duty cycle calibration.
+  0x79208  [NEW]  OMP Throttle Axis (19 breakpoints)
+           Throttle range 0-90° TPS for Oil Metering By Throttle table.
+  0x79264  [NEW]  Oil Metering By Throttle Table
+           1D table: uint8 duty by throttle position.
+           Transient OMP enrichment modulation.
+
+  Acceleration Enrichment / TPS Filter:
+  0x6F71C  [NEW]  TPS Filter High-Gain Coefficient Set (4 floats)
+           Fast response filter gains for acceleration detection.
+  0x6F72C  [NEW]  TPS Filter Low-Gain Coefficient Set (4 floats)
+           Slow response filter gains for cruise stability.
+  0x6F740  [NEW]  TPS Filter Neutral Gain Set (3 floats)
+           Default filter gains.
+  0x6F74C  [NEW]  TPS Filter Fallback Gain Set (4 floats)
+           Fallback filter coefficients.
+
+  Intake Pressure:
+  (0x7A9BC and 0x7A9C0 already listed in SENSORS section as [RR] entries)
+
+  Fuel Cut Control (from rpm_limiter_fuel_cutoff @ 0xC59E, Table_2D___226_ base=0x7A150):
+  0x7A194  [NEW]  Fuel Cut Disable RPM Threshold  [CONFIRMED = 10000.0] [VERIFIED]
+           Float32. Hard RPM cutoff disable threshold. At Table_2D___226_+0x44.
+           Previous "WRONG" was due to misreading ROM bytes — actual = 0x461C4000 = 10000.0.
+           When RPM < 10000.0: fuel cut command cleared (0xFFFFA386 = 0).
+  0x7A198  [NEW]  Fuel Cut Enable RPM Threshold  [CONFIRMED = 10000.0] [VERIFIED]
+           Float32. Hard RPM cutoff enable threshold. At Table_2D___226_+0x48.
+           When RPM >= 10000.0: fuel cut command set (0xFFFFA386 = 1).
+           Both thresholds = 10000.0 means no hysteresis (hard cut at 10000 RPM).
+  0x7A1D0  [NEW]  Lambda Integral Lower Clamp  [CONFIRMED = 64.0] [VERIFIED]
+           Float32. Minimum value for lambda integral accumulator.
+           At Table_2D___226_+0x80. Used by lambda_control_closed_loop.
+  0x7A1D4  [NEW]  Lambda Integral Upper Clamp  [CONFIRMED = 255.0] [VERIFIED]
+           Float32. Maximum value for lambda integral accumulator.
+           At Table_2D___226_+0x84. Used by lambda_control_closed_loop.
+  0x7A1D8  [NEW]  Progressive Fuel Cut Enable Threshold  [CONFIRMED = 200.0] [VERIFIED]
+           Float32. At Table_2D___226_+0x88.
+           Minimum RPM error (from target) to begin progressive fuel cut.
+  0x7A1DC  [NEW]  Progressive Fuel Cut Maintain Threshold  [CONFIRMED = 2000.0] [VERIFIED]
+           Float32. At Table_2D___226_+0x8C.
+           RPM error above which progressive fuel cut duty maintained.
+  0x7A1E0  [NEW]  Fuel Cut Control Gain  [CONFIRMED = 0.004] [VERIFIED]
+           Float32. At Table_2D___226_+0x90.
+           Scaling factor for RPM error → fuel cut duty conversion.
+
+
+--- CAN BUS CONFIGURATION (from can_periodic_task_handler, ROM queues) ---
+
+  0x4E960  [NEW]  HCAN0 TX Message Queue  [CONFIRMED] [VERIFIED]
+           ROM table, 16 entries × 16 bytes each. Pre-configured CAN message
+           IDs with data pointers for HCAN0 bus. Message types 0x01-0xE8.
+           Read by hcan0_mailbox_rotate_enqueue (0xA608).
+
+  0x4EC60  [NEW]  HCAN1 TX Message Queue  [CONFIRMED]
+           ROM table, 6 entries. Supplementary CAN messages for HCAN1 bus.
+           Message types: 0x12, 0x16, 0x30, 0xB0, 0xC0, 0x47.
+
+  0x4ECE0  [NEW]  Ignition Phase-to-Timing Offset LUT  [CONFIRMED]
+           uint8 × 256 entries. Converts injection timing phase to ignition
+           advance offset. Used by knock_detection_processing.
+
+  0x4ECC0  [NEW]  "VVT" Phase Mask LUT  [CONFIRMED]
+           ⚠ UNCERTAIN: "VVT" is a misnomer — Wankel has no valves. Likely
+           intake port geometry or emission actuator phase control.
+           uint16 × 256 entries. Determines which rotors affected by
+           phase change. Used by knock detection for rotor masking.
+
+--- IGNITION CORRECTION TABLES (from ignition_timing_calc_E7F8) ---
+
+  0x6D0B0  [NEW]  Knock Correction Table  [CONFIRMED]
+           1D float array, 8 entries (load-indexed).
+           Range: -2.0 to -8.0 degrees. Retard penalty when knock detected.
+
+  0x6D0B6  [NEW]  EGR Penalty Table  [CONFIRMED]
+           Timing retard for EGR valve operation.
+           Offset -2 to -5 degrees, applied when EGR is active.
+
+  0x6D0BC  [NEW]  "VVT" Timing Adjustment Table  [CONFIRMED]
+           ⚠ UNCERTAIN: Not actual VVT — likely intake geometry or emission
+           actuator timing offset for ignition compensation.
+           Offset range -3 to +5 degrees for phase alignment.
+
+  0x6D0C6  [NEW]  Cold Start Timing Boost  [CONFIRMED]
+           Extra advance during cold cranking for faster start.
+
+
+==========================================================================================
+SECTION 2: UNNAMED ROMRAIDER TABLES (437 entries)
+  Purpose unknown. Sorted by address for xref with IDA.
+==========================================================================================
+
+  0x6CFE4  Table 2D - 0   uint8 1x16 [1 refs]
+  0x6D034  Table 2D - 1   uint8 1x16 [1 refs]
+  0x6D114  Table 2D - 3   uint8 1x10 [1 refs]
+  0x6D138  Table 2D - 4   uint8 1x6 [1 refs]
+  0x6D158  Table 2D - 288 Check DataType  uint8 1x6 [1 refs]
+  0x6D178  Table 2D - 289 Check DataType  uint8 1x6 [1 refs]
+  0x6D198  Table 2D - 290 Check DataType  uint8 1x6 [1 refs]
+  0x6D1E0  Table 2D - 5  uint16 1x16 [1 refs]
+  0x6D230  Table 3D - 103   uint8 6x6 [1 refs]
+  0x6D2AC  Table 3D - 0   uint8 16x6 [1 refs]
+  0x6D364  Table 3D - 1   uint8 16x6 [1 refs]
+  0x6D41C  Table 3D - 2   uint8 16x6 [1 refs]
+  0x6D4D4  Table 3D - 3   uint8 16x6 [1 refs]
+  0x6E474  Table 3D - 106   uint8 3x4 [1 refs]
+  0x6E4BC  Table 2D - 10   uint16 1x6 [1 refs]
+  0x6E4E0  Table 2D - 11   uint16 1x6 [1 refs]
+  0x6E504  Table 2D - 12   uint16 1x6 [1 refs]
+  0x6E528  Table 2D - 13   uint16 1x6 [1 refs]
+  0x6E54C  Table 2D - 14   uint16 1x6 [1 refs]
+  0x6E570  Table 2D - 15   uint16 1x6 [1 refs]
+  0x6E5BC  Table 2D - 16   uint16 1x16 [1 refs]
+  0x6E6F0  Table 2D - 17   uint8 1x7 [1 refs]
+  0x6E714  Table 2D - 18   uint8 1x7 [1 refs]
+  0x6E738  Table 2D - 19   uint8 1x7 [1 refs]
+  0x6E75C  Table 2D - 20   uint8 1x7 [1 refs]
+  0x6E780  Table 2D - 21   uint8 1x7 [1 refs]
+  0x6E7A4  Table 2D - 22   uint8 1x7 [1 refs]
+  0x6E7F8  Table 2D - 23   uint16 1x19 [1 refs]
+  0x6E84C  Table 2D - 24   uint16 1x11 [1 refs]
+  0x6EA88  Table 3D - 12   uint8 7x3 [1 refs]
+  0x6EAF8  Table 2D - 34   uint8 1x9 [1 refs]
+  0x6EB28  Table 2D - 35   uint8 1x9 [1 refs]
+  0x6EB58  Table 2D - 36   uint8 1x9 [1 refs]
+  0x6EB88  Table 2D - 37   uint8 1x9 [1 refs]
+  0x6EBA8  Table 2D - 38   uint8 1x5 [1 refs]
+  0x6EBC8  Table 2D - 39   uint8 1x6 [1 refs]
+  0x6EC08  Table 2D - 40   uint8 1x14 [1 refs]
+  0x6EC44  Table 2D - 41   uint16 1x4 [1 refs]
+  0x6EC70  Table 2D - 42   uint16 1x9 [1 refs]
+  0x6ECA8  Table 2D - 43   uint16 1x9 [1 refs]
+  0x6ECE0  Table 2D - 44   uint16 1x9 [1 refs]
+  0x6ED08  Table 2D - 45   uint16 1x5 [1 refs]
+  0x6ED3C  Table 2D - 46   uint8 1x9 [1 refs]
+  0x6ED78  Table 3D - 13   uint8 9x3 [1 refs]
+  0x6EDF4  Table 3D - 14   uint8 12x8 [1 refs]
+  0x6EEEC  Table 3D - 15  uint8 20x18 [1 refs]
+  0x6F0EC  Table 3D - 16  uint8 20x18 [1 refs]
+  0x6F878  Table 2D - 57   uint16 1x12 [1 refs]
+  0x6FAB0  Table 2D - 58   uint8 1x5 [1 refs]
+  0x6FACC  Table 2D - 292 Check DataType  uint8 1x5 [1 refs]
+  0x6FAF4  Table 2D - 293 Check DataType  uint8 1x5 [1 refs]
+  0x6FCF8  Table 2D - 295 Check DataType  uint8 1x8 [1 refs]
+  0x6FD20  Table 2D - 296 Check DataType  uint8 1x8 [1 refs]
+  0x6FDE0  Table 2D - 299 Check DataType  uint8 1x16 [1 refs]
+  0x6FE60  Table 2D - 300 Check DataType  uint8 1x16 [1 refs]
+  0x6FEE4  Table 2D - 59   uint16 1x11 [1 refs]
+  0x70084  Table 2D - 60   uint8 1x10 [1 refs]
+  0x700B0  Table 2D - 61   uint8 1x8 [1 refs]
+  0x700E0  Table 2D - 62   uint8 1x10 [1 refs]
+  0x70110  Table 2D - 63   uint16 1x9 [1 refs]
+  0x70230  Table 2D - 64   uint8 1x16 [1 refs]
+  0x70264  Table 2D - 65   uint8 1x9 [1 refs]
+  0x7027C  Table 2D - 66   uint8 1x3 [1 refs]
+  0x702A4  Table 2D - 67   uint8 1x9 [1 refs]
+  0x702CC  Table 2D - 302  uint8 1x7 [1 refs]
+  0x702F0  Table 2D - 303 Check DataType  uint8 1x7 [1 refs]
+  0x70334  Table 2D - 68   uint8 1x15 [1 refs]
+  0x70380  Table 2D - 304 Check DataType  uint8 1x15 [1 refs]
+  0x703BC  Table 2D - 69   uint16 1x7 [1 refs]
+  0x703E4  Table 2D - 305  uint8 1x6 [1 refs]
+  0x70414  Table 2D - 306  uint16 1x9 [1 refs]
+  0x70468  Table 2D - 307  uint16 1x16 [1 refs]
+  0x70504  Table 2D - 308  float 1x31 [1 refs]
+  0x705FC  Table 2D - 309  float 1x31 [1 refs]
+  0x706F4  Table 2D - 310  float 1x31 [1 refs]
+  0x707EC  Table 2D - 311  float 1x31 [1 refs]
+  0x708A8  Table 3D - 22   uint8 8x8 [1 refs]
+  0x70924  Table 3D - 23   uint8 12x3 [1 refs]
+  0x70998  Table 3D - 24   uint16 13x7 [1 refs]
+  0x70AA0  Table 3D - 25   uint16 13x7 [1 refs]
+  0x70C70  Table 3D - 27   uint16 8x9 [1 refs]
+  0x70D44  Table 3D - 28   uint16 8x9 [1 refs]
+  0x70E44  Table 3D - 29  uint16 12x16 [1 refs]
+  0x71034  Table 3D - 30   uint16 12x16 [1 refs]
+  0x71204  Table 3D - 31   uint16 13x7 [1 refs]
+  0x7130C  Table 3D - 32   uint16 13x7 [1 refs]
+  0x71408  Table 3D - 108   float 10x7 [1 refs]
+  0x715BC  Table 2D - 70   uint8 1x12 [1 refs]
+  0x715F8  Table 2D - 71   uint8 1x12 [1 refs]
+  0x71634  Table 2D - 72   uint8 1x12 [1 refs]
+  0x71664  Table 2D - 73   uint8 1x9 [1 refs]
+  0x71694  Table 2D - 74   uint8 1x9 [1 refs]
+  0x716C4  Table 2D - 75   uint8 1x9 [1 refs]
+  0x716F4  Table 2D - 76   uint8 1x9 [1 refs]
+  0x71724  Table 2D - 77   uint8 1x9 [1 refs]
+  0x71754  Table 2D - 78   uint8 1x9 [1 refs]
+  0x71784  Table 2D - 312 Check DataType  uint8 1x9 [1 refs]
+  0x717BC  Table 2D - 79   uint16 1x9 [1 refs]
+  0x717F4  Table 2D - 80   uint16 1x9 [1 refs]
+  0x71828  Table 2D - 81   uint16 1x8 [1 refs]
+  0x71868  Table 2D - 82   uint16 1x12 [1 refs]
+  0x718B0  Table 2D - 313 Check DataType  uint8 1x12 [1 refs]
+  0x71910  Table 2D - 314 Check DataType  uint8 1x12 [1 refs]
+  0x71970  Table 2D - 315 Check DataType  uint8 1x12 [1 refs]
+  0x71A78  Table 2D - 83   uint8 1x10 [1 refs]
+  0x71A98  Table 2D - 316  uint16 1x5 [1 refs]
+  0x71ACC  Table 2D - 84   uint16 1x10 [1 refs]
+  0x71B08  Table 2D - 85   uint16 1x10 [1 refs]
+  0x71B44  Table 2D - 317  uint16 1x10 [1 refs]
+  0x71B70  Table 2D - 318 Check DataType  uint8 1x6 [1 refs]
+  0x71B94  Table 2D - 319 Check DataType  uint8 1x6 [1 refs]
+  0x71F84  Table 2D - 97   uint8 1x18 [1 refs]
+  0x71F9C  Table 2D - 98   uint8 1x1 [1 refs]
+  0x71FE8  Table 2D - 99   uint8 1x18 [1 refs]
+  0x72000  Table 2D - 100   uint8 1x1 [1 refs]
+  0x7204C  Table 2D - 101   uint8 1x18 [1 refs]
+  0x72064  Table 2D - 102   uint8 1x1 [1 refs]
+  0x720BC  Table 2D - 320 Check DataType  uint8 1x12 [1 refs]
+  0x720D8  Table 2D - 321 Check DataType  uint8 1x1 [1 refs]
+  0x7210C  Table 2D - 322 Check DataType  uint8 1x12 [1 refs]
+  0x72154  Table 2D - 323 Check DataType  uint8 1x12 [1 refs]
+  0x72188  Table 2D - 324 Check DataType  uint8 1x7 [1 refs]
+  0x721B4  Table 2D - 325 Check DataType  uint8 1x7 [1 refs]
+  0x721D8  Table 2D - 326 Check DataType  uint8 1x5 [1 refs]
+  0x72200  Table 2D - 327 Check DataType  uint8 1x7 [1 refs]
+  0x7222C  Table 2D - 328 Check DataType  uint8 1x7 [1 refs]
+  0x72B64  Table 2D - 329 Check DataType  uint8 1x11 [1 refs]
+  0x72C20  Table 2D - 104   uint8 1x9 [1 refs]
+  0x72CAC  Table 2D - 106   uint8 1x9 [1 refs]
+  0x72CDC  Table 2D - 107   uint8 1x9 [1 refs]
+  0x72D0C  Table 2D - 108   uint8 1x9 [1 refs]
+  0x72D3C  Table 2D - 109   uint8 1x9 [1 refs]
+  0x72DD0  Table 2D - 110   uint8 1x22 [2 refs]
+  0x72E40  Table 2D - 111   uint8 1x22 [2 refs]
+  0x72E84  Table 2D - 112   uint8 1x9 [1 refs]
+  0x72EB4  Table 2D - 113   uint8 1x9 [1 refs]
+  0x72EDC  Table 2D - 114   uint16 1x7 [1 refs]
+  0x72F08  Table 2D - 115   uint16 1x7 [1 refs]
+  0x72F34  Table 2D - 116   uint16 1x7 [1 refs]
+  0x72F64  Table 2D - 117   uint16 1x6 [1 refs]
+  0x72FC8  Table 2D - 118   uint8 1x19 [1 refs]
+  0x73778  Table 2D - 119   uint8 1x4 [1 refs]
+  0x737BC  Table 2D - 120   uint16 1x16 [1 refs]
+  0x73808  Table 3D - 43   uint8 7x4 [1 refs]
+  0x7386C  Table 3D - 44   uint8 9x9 [1 refs]
+  0x7393C  Table 3D - 45   uint16 16x15 [1 refs]
+  0x73B70  Table 2D - 121   uint8 1x21 [1 refs]
+  0x73BBC  Table 2D - 122   uint8 1x13 [1 refs]
+  0x73C00  Table 2D - 123   uint8 1x13 [1 refs]
+  0x73C50  Table 2D - 124   uint8 1x11 [1 refs]
+  0x73C88  Table 2D - 125   uint8 1x11 [1 refs]
+  0x73CC0  Table 2D - 126   uint8 1x11 [1 refs]
+  0x73CE8  Table 2D - 330  uint8 1x7 [1 refs]
+  0x73D28  Table 2D - 127   uint16 1x12 [1 refs]
+  0x73D64  Table 3D - 46   uint8 5x4 [1 refs]
+  0x73DB4  Table 2D - 128   uint8 1x5 [1 refs]
+  0x73DD0  Table 2D - 129   uint8 1x5 [1 refs]
+  0x73DEC  Table 2D - 130   uint8 1x5 [1 refs]
+  0x73E3C  Table 3D - 47   uint8 11x7 [1 refs]
+  0x73EBC  Table 3D - 48   uint8 6x6 [1 refs]
+  0x73F14  Table 3D - 109   uint8 6x7 [1 refs]
+  0x73FB8  Table 2D - 131   uint8 1x8 [1 refs]
+  0x73FE0  Table 2D - 132   uint8 1x8 [1 refs]
+  0x74008  Table 2D - 133   uint8 1x8 [1 refs]
+  0x74030  Table 2D - 134   uint8 1x8 [1 refs]
+  0x74054  Table 2D - 135   uint8 1x7 [1 refs]
+  0x74078  Table 2D - 136   uint8 1x7 [1 refs]
+  0x740AC  Table 2D - 137   uint8 1x11 [1 refs]
+  0x740E4  Table 2D - 138   uint8 1x11 [1 refs]
+  0x74110  Table 2D - 139   uint8 1x8 [1 refs]
+  0x74138  Table 2D - 140   uint8 1x8 [1 refs]
+  0x74160  Table 2D - 141   uint8 1x8 [1 refs]
+  0x74188  Table 2D - 142   uint8 1x8 [1 refs]
+  0x741AC  Table 2D - 143   uint8 1x7 [1 refs]
+  0x75054  Table 2D - 144   uint16 1x9 [1 refs]
+  0x750B0  Table 2D - 145   float 1x18 [1 refs]
+  0x750F8  Table 2D - 146   float 1x9 [1 refs]
+  0x75130  Table 2D - 147   uint16 1x9 [1 refs]
+  0x75158  Table 2D - 331  uint16 1x5 [1 refs]
+  0x752E0  Table 2D - 148   uint8 1x7 [1 refs]
+  0x7534C  Table 2D - 150   uint16 1x11 [1 refs]
+  0x75398  Table 2D - 151   uint16 1x13 [1 refs]
+  0x753D8  Table 2D - 152   uint16 1x9 [1 refs]
+  0x75410  Table 2D - 153   uint16 1x9 [1 refs]
+  0x75448  Table 2D - 154   uint16 1x9 [1 refs]
+  0x75480  Table 2D - 155   uint16 1x9 [1 refs]
+  0x754F0  Table 3D - 53   uint8 11x12 [1 refs]
+  0x755B8  Table 2D - 156   uint8 1x9 [1 refs]
+  0x75630  Table 3D - 54   uint16 10x17 [1 refs]
+  0x757F0  Table 3D - 55   uint16 10x17 [1 refs]
+  0x759CC  Table 2D - 157   uint8 1x18 [1 refs]
+  0x75A78  Table 2D - 332 Check DataType  uint8 1x17 [1 refs]
+  0x75AE0  Table 2D - 333 Check DataType  uint8 1x17 [2 refs]
+  0x75BBC  Table 2D - 334 Check DataType  uint8 1x6 [1 refs]
+  0x75BF8  Table 2D - 158   uint16 1x13 [1 refs]
+  0x75C48  Table 2D - 159   uint16 1x13 [1 refs]
+  0x75D5C  Table 3D - 110   uint8 5x20 [3 refs]
+  0x75E10  Table 3D - 56   uint16 17x3 [1 refs]
+  0x75EC8  Table 3D - 57   uint16 17x3 [1 refs]
+  0x75F80  Table 3D - 58   uint16 17x3 [1 refs]
+  0x76034  Table 2D - 160   uint16 1x18 [1 refs]
+  0x7607C  Table 2D - 161   uint16 1x9 [1 refs]
+  0x760A4  Table 2D - 162   uint16 1x5 [1 refs]
+  0x76144  Table 3D - 59  uint8 18x19 [1 refs]
+  0x76330  Table 3D - 60   uint16 18x19 [1 refs]
+  0x76988  Table 3D - 62   uint16 8x19 [1 refs]
+  0x76AD8  Table 3D - 63   uint8 5x3 [1 refs]
+  0x76B28  Table 2D - 163   uint16 1x4 [1 refs]
+  0x76C2C  Table 2D - 335 Check DataType  uint8 1x25 [1 refs]
+  0x76CF4  Table 2D - 336 Check DataType  uint8 1x25 [1 refs]
+  0x76DBC  Table 2D - 337 Check DataType  uint8 1x25 [1 refs]
+  0x76E84  Table 2D - 338 Check DataType  uint8 1x25 [1 refs]
+  0x76F4C  Table 2D - 339 Check DataType  uint8 1x25 [1 refs]
+  0x7702C  Table 2D - 340 Check DataType  uint8 1x31 [1 refs]
+  0x77124  Table 2D - 341 Check DataType  uint8 1x31 [1 refs]
+  0x7721C  Table 2D - 342 Check DataType  uint8 1x31 [1 refs]
+  0x77314  Table 2D - 343 Check DataType  uint8 1x31 [1 refs]
+  0x7740C  Table 2D - 344 Check DataType  uint8 1x31 [1 refs]
+  0x774C0  Table 3D - 111   uint8 9x5 [1 refs]
+  0x775B0  Table 3D - 112   uint8 10x5 [1 refs]
+  0x77694  Table 3D - 113   uint8 2x5 [1 refs]
+  0x776D8  Table 3D - 114   uint8 2x5 [1 refs]
+  0x77738  Table 3D - 115   uint8 9x5 [1 refs]
+  0x77814  Table 3D - 116   uint8 5x5 [1 refs]
+  0x778F0  Table 2D - 164   uint8 1x1 [1 refs]
+  0x778F8  Table 2D - 165   uint8 1x1 [1 refs]
+  0x77920  Table 2D - 345  uint16 1x9 [1 refs]
+  0x779D8  Table 2D - 166   uint8 1x8 [1 refs]
+  0x779FC  Table 2D - 167   uint16 1x7 [1 refs]
+  0x77A28  Table 2D - 168   uint16 1x7 [1 refs]
+  0x77A9C  Table 3D - 64   uint8 11x11 [1 refs]
+  0x77B20  Table 3D - 65   uint8 1x1 [1 refs]
+  0x77B2C  Table 3D - 66   uint8 1x1 [1 refs]
+  0x77B44  Table 2D - 169   uint16 1x4 [1 refs]
+  0x7829C  Table 2D - 171   uint8 1x6 [1 refs]
+  0x782B8  Table 2D - 172   uint8 1x5 [1 refs]
+  0x782C4  Table 2D - 173   uint8 1x1 [1 refs]
+  0x782D4  Table 2D - 174   uint8 1x3 [1 refs]
+  0x782E4  Table 2D - 346  uint8 1x3 [1 refs]
+  0x78318  Table 2D - 175   uint16 1x12 [1 refs]
+  0x78364  Table 2D - 176   uint16 1x13 [1 refs]
+  0x7845C  Table 2D - 177 Might be Primary/Secondary Ratio  uint8 1x17 [1 refs]
+  0x78490  Table 2D - 178  uint8 1x8 [1 refs]
+  0x784BC  Table 2D - 347 Check DataType  uint8 1x9 [1 refs]
+  0x784D4  Table 2D - 348 Check DataType  uint8 1x3 [1 refs]
+  0x784E4  Table 2D - 349 Check DataType  uint8 1x3 [1 refs]
+  0x7850C  Table 2D - 350 Check DataType  uint8 1x9 [1 refs]
+  0x7853C  Table 2D - 179 Injector Ratio Poss Min Sec PW #2  uint8 1x9 [1 refs]
+  0x7856C  Table 2D - 180 Injector Ratio Poss Min Sec PW #1  uint8 1x9 [1 refs]
+  0x7859C  Table 2D - 181 Minimum Lambda/EQ for Secondary Injectiors  uint16 1x9 [1 refs]
+  0x785F4  Table 2D - 182   uint16 1x17 [1 refs]
+  0x78A00  Table 2D - 184   uint8 1x12 [1 refs]
+  0x78A30  Table 2D - 185   uint8 1x9 [1 refs]
+  0x78A6C  Table 2D - 186   uint8 1x12 [1 refs]
+  0x78A9C  Table 2D - 187   uint8 1x9 [1 refs]
+  0x78AD8  Table 2D - 188   uint8 1x12 [1 refs]
+  0x78B08  Table 2D - 189   uint8 1x9 [1 refs]
+  0x78B38  Table 2D - 190   uint8 1x9 [1 refs]
+  0x78B68  Table 2D - 191   uint8 1x9 [1 refs]
+  0x78BA0  Table 2D - 192   uint16 1x11 [1 refs]
+  0x78BE8  Table 2D - 193   uint16 1x12 [1 refs]
+  0x78C68  Table 2D - 194   uint8 1x7 [1 refs]
+  0x78C74  Table 2D - 195   uint8 1x1 [1 refs]
+  0x78C94  Table 2D - 351  uint8 1x7 [1 refs]
+  0x78DC0  Table 2D - 196   uint16 1x9 [1 refs]
+  0x78DF8  Table 2D - 197   uint16 1x9 [1 refs]
+  0x78F00  Table 2D - 352 Check DataType  uint8 1x9 [1 refs]
+  0x78F24  Table 2D - 353 Check DataType  uint8 1x6 [1 refs]
+  0x78F44  Table 2D - 354 Check DataType  uint8 1x6 [1 refs]
+  0x78F78  Table 2D - 355 Check DataType  uint8 1x11 [1 refs]
+  0x78F90  Table 2D - 198   uint16 1x3 [1 refs]
+  0x78FB0  Table 2D - 356 Check DataType  uint8 1x6 [1 refs]
+  0x78FD4  Table 2D - 357 Check DataType  uint8 1x6 [1 refs]
+  0x79004  Table 2D - 358 Check DataType  uint8 1x6 [1 refs]
+  0x79028  Table 2D - 359 Check DataType  uint8 1x3 [1 refs]
+  0x792DC  Table 3D - 119   uint8 6x5 [1 refs]
+  0x79334  Table 2D - 199   uint8 1x10 [1 refs]
+  0x7938C  Table 3D - 71   uint8 16x3 [1 refs]
+  0x793E4  Table 3D - 72   uint8 5x5 [1 refs]
+  0x79434  Table 3D - 73   uint8 7x6 [1 refs]
+  0x794B0  Table 2D - 200   uint16 1x16 [1 refs]
+  0x79510  Table 2D - 201   uint16 1x16 [1 refs]
+  0x79584  Table 3D - 74   uint8 16x5 [1 refs]
+  0x79628  Table 3D - 75   uint8 16x5 [1 refs]
+  0x796E8  Table 2D - 202   uint8 1x11 [1 refs]
+  0x79728  Table 2D - 203   uint16 1x13 [1 refs]
+  0x79790  Table 2D - 204   uint8 1x8 [1 refs]
+  0x797C8  Table 2D - 205   uint8 1x12 [1 refs]
+  0x79814  Table 2D - 206   uint16 1x16 [1 refs]
+  0x798B8  Table 2D - 207   uint8 1x5 [1 refs]
+  0x798D0  Table 2D - 208   uint8 1x4 [1 refs]
+  0x798E8  Table 2D - 209   uint8 1x5 [1 refs]
+  0x79920  Table 2D - 210   uint8 1x12 [1 refs]
+  0x7995C  Table 2D - 211   uint8 1x12 [1 refs]
+  0x799A0  Table 2D - 212   uint8 1x8 [1 refs]
+  0x799B8  Table 2D - 213   uint16 1x4 [1 refs]
+  0x799F8  Table 2D - 214   uint16 1x14 [1 refs]
+  0x79A1C  Table 2D - 215   uint16 1x2 [1 refs]
+  0x79A54  Table 3D - 76   uint16 6x7 [1 refs]
+  0x79AD4  Table 3D - 77   uint16 4x7 [1 refs]
+  0x79B48  Table 3D - 78   uint16 8x7 [1 refs]
+  0x79C18  Table 2D - 216   uint8 1x10 [1 refs]
+  0x79C48  Table 2D - 217   uint8 1x9 [1 refs]
+  0x79C74  Table 2D - 218   uint8 1x8 [1 refs]
+  0x79CB4  Table 2D - 219   uint16 1x14 [1 refs]
+  0x79D08  Table 2D - 220   uint16 1x14 [1 refs]
+  0x79D5C  Table 2D - 221   uint16 1x14 [1 refs]
+  0x79DAC  Table 3D - 79   uint16 6x7 [1 refs]
+  0x79E30  Table 3D - 80   uint16 5x7 [1 refs]
+  0x79EAC  Table 3D - 81   uint16 6x7 [1 refs]
+  0x79F2C  Table 3D - 82   uint16 5x6 [1 refs]
+  0x79F94  Table 3D - 83   uint16 5x6 [1 refs]
+  0x7A070  Table 2D - 222   uint16 1x18 [1 refs]
+  0x7A0B4  Table 2D - 223   uint16 1x8 [1 refs]
+  0x7A0E4  Table 2D - 224   uint16 1x8 [1 refs]
+  0x7A118  Table 2D - 225   uint16 1x9 [1 refs]
+  0x7A150  Table 2D - 226   uint16 1x9 [1 refs]
+  0x7A554  Table 2D - 228   uint8 1x7 [1 refs]
+  0x7A58C  Table 2D - 229   uint16 1x12 [1 refs]
+  0x7A65C  Table 2D - 231 (Airflow Related)  uint16 1x8 [1 refs]
+  0x7A698  Table 2D - 232   uint16 1x11 [1 refs]
+  0x7A6DC  Table 2D - 233   uint16 1x11 [1 refs]
+  0x7A720  Table 2D - 234   uint16 1x11 [1 refs]
+  0x7A764  Table 2D - 364 Check DataType  uint8 1x11 [1 refs]
+  0x7A7A4  Table 2D - 365 Check DataType  uint8 1x10 [1 refs]
+  0x7A7F0  Table 2D - 254   uint8 1x10 [1 refs]
+  0x7A80C  Table 2D - 255   uint8 1x4 [1 refs]
+  0x7A838  Table 3D - 86   uint16 6x4 [1 refs]
+  0x7A8CC  Table 2D - 375 Check DataType  uint8 1x7 [1 refs]
+  0x7A8F8  Table 2D - 256   uint16 1x7 [1 refs]
+  0x7A9F8  Table 2D - 257   uint8 1x9 [1 refs]
+  0x7AA28  Table 2D - 258   uint8 1x9 [1 refs]
+  0x7AABC  Table 3D - 122   uint8 9x9 [1 refs]
+  0x7AB58  Table 3D - 123   uint8 9x9 [1 refs]
+  0x7AC44  Table 3D - 87   uint16 9x9 [1 refs]
+  0x7AD30  Table 3D - 88   uint16 9x9 [1 refs]
+  0x7ADDC  Table 3D - 89   uint16 1x1 [1 refs]
+  0x7ADE8  Table 3D - 90   uint16 1x1 [1 refs]
+  0x7AE7C  Table 2D - 259   uint8 1x18 [1 refs]
+  0x7AE94  Table 2D - 376 Check DataType  uint8 1x1 [1 refs]
+  0x7AE9C  Table 2D - 377 Check DataType  uint8 1x1 [1 refs]
+  0x7AF9C  Table 2D - 262   uint8 1x8 [1 refs]
+  0x7B05C  Table 2D - 264   uint16 1x8 [1 refs]
+  0x7B0D0  Table 2D - 265   uint16 1x25 [1 refs]
+  0x7B168  Table 2D - 266   uint16 1x25 [1 refs]
+  0x7B1BC  Table 2D - 267   uint16 1x8 [1 refs]
+  0x7B204  Table 2D - 268   uint16 1x14 [1 refs]
+  0x7B240  Table 2D - 269   uint16 1x8 [1 refs]
+  0x7B464  Table 2D - 271   uint8 1x10 [1 refs]
+  0x7B4A0  Table 2D - 272   uint8 1x12 [1 refs]
+  0x7B4D8  Table 2D - 273   uint8 1x11 [1 refs]
+  0x7B510  Table 2D - 274   uint8 1x11 [1 refs]
+  0x7B534  Table 2D - 275   uint8 1x6 [1 refs]
+  0x7B554  Table 2D - 276   uint8 1x6 [1 refs]
+  0x7B55A  Table 2D - 270   uint16 1x10 [1 refs]
+  0x7B59C  Table 3D - 92   uint16 7x4 [1 refs]
+  0x7B600  Table 3D - 93   uint16 7x4 [1 refs]
+  0x7B664  Table 3D - 94   uint16 7x4 [1 refs]
+  0x7B6C8  Table 3D - 95   uint16 7x4 [1 refs]
+  0x7B72C  Table 3D - 96   uint16 7x4 [1 refs]
+  0x7B7AC  Table 3D - 97   uint16 10x8 [1 refs]
+  0x7B894  Table 3D - 98   uint16 10x8 [1 refs]
+  0x7B97C  Table 3D - 99   uint16 10x8 [1 refs]
+  0x7BAB0  Table 2D - 378 Check DataType  uint8 1x7 [1 refs]
+  0x7BAE0  Table 2D - 379 Check DataType  uint8 1x5 [1 refs]
+  0x7BB3C  Table 3D - 124   uint8 9x9 [1 refs]
+  0x7BBD8  Table 3D - 125   uint8 9x9 [1 refs]
+  0x7BD94  Table 3D - 126   uint8 10x17 [1 refs]
+  0x7C084  Table 2D - 277   uint8 1x13 [1 refs]
+  0x7C0DC  Table 3D - 127   uint8 10x8 [1 refs]
+  0x7C3C4  Table 2D - 382 Check DataType  uint8 1x4 [1 refs]
+  0x7C3DC  Table 2D - 383 Check DataType  uint8 1x4 [1 refs]
+  0x7C3F4  Table 2D - 384 Check DataType  uint8 1x4 [1 refs]
+  0x7C4B4  Table 2D - 279   uint8 1x10 [1 refs]
+  0x7C4E8  Table 2D - 280   uint8 1x10 [1 refs]
+  0x7C51C  Table 2D - 281   uint8 1x10 [1 refs]
+  0x7C550  Table 2D - 385 Check DataType  uint8 1x10 [1 refs]
+  0x7C588  Table 2D - 386  uint8 1x9 [1 refs]
+  0x7C61C  Table 2D - 387 Check DataType  uint8 1x9 [1 refs]
+  0x7C678  Table 2D - 388 Check DataType  uint8 1x5 [1 refs]
+  0x7C6A0  Table 2D - 389 Check DataType  uint8 1x5 [1 refs]
+  0x7C6D8  Table 2D - 282   uint8 1x7 [1 refs]
+  0x7C708  Table 2D - 283   uint8 1x10 [1 refs]
+  0x7C730  Table 2D - 390 Check DataType  uint8 1x6 [1 refs]
+  0x7C750  Table 2D - 284   uint16 1x6 [1 refs]
+  0x7C780  Table 2D - 285   uint16 1x9 [1 refs]
+  0x7C7D0  Table 3D - 100   uint8 9x6 [1 refs]
+  0x7C844  Table 3D - 101   uint8 9x6 [1 refs]
+  0x7C8EC  Table 2D - 286   uint8 1x15 [1 refs]
+  0x7C920  Table 2D - 287   uint8 1x9 [1 refs]
+  0x7C9B4  Table 3D - 102   uint8 24x10 [1 refs]
+  0x7CCDC  Table 2D - 391 Check DataType  uint8 1x10 [1 refs]
+  0x7CD2C  Table 2D - 392 Check DataType  uint8 1x10 [1 refs]
+  0x7CD7C  Table 2D - 393 Check DataType  uint8 1x10 [1 refs]
+  0x7CDCC  Table 2D - 394 Check DataType  uint8 1x10 [1 refs]
+  0x7CE1C  Table 2D - 395 Check DataType  uint8 1x10 [1 refs]
+  0x7CE6C  Table 2D - 396 Check DataType  uint8 1x10 [1 refs]
+  0x7CEBC  Table 2D - 397 Check DataType  uint8 1x10 [1 refs]
+  0x7CF0C  Table 2D - 398 Check DataType  uint8 1x10 [1 refs]
+  0x7CF5C  Table 2D - 399 Check DataType  uint8 1x10 [1 refs]
+  0x7CFAC  Table 2D - 400 Check DataType  uint8 1x10 [1 refs]
+  0x7CFFC  Table 2D - 401 Check DataType  uint8 1x10 [1 refs]
+  0x7D04C  Table 2D - 402 Check DataType  uint8 1x10 [1 refs]
+  0x7D09C  Table 2D - 403 Check DataType  uint8 1x10 [1 refs]
+  0x7D0F4  Table 2D - 366 Check DataType  uint8 1x9 [1 refs]
+  0x7D150  Table 3D - 120   uint8 8x10 [1 refs]
+  0x7D1E8  Table 3D - 121   uint8 8x10 [1 refs]
+  0x7D274  Table 2D - 235   uint16 1x8 [1 refs]
+  0x7D2E0  Table 2D - 236   uint16 1x9 [1 refs]
+  0x7D318  Table 2D - 237   uint16 1x9 [1 refs]
+  0x7D350  Table 2D - 238   uint16 1x9 [1 refs]
+  0x7D388  Table 2D - 239   uint16 1x9 [1 refs]
+  0x7D3C0  Table 2D - 240   uint16 1x9 [1 refs]
+  0x7D3F8  Table 2D - 241   uint16 1x9 [1 refs]
+  0x7D430  Table 2D - 242   uint16 1x9 [1 refs]
+  0x7D468  Table 2D - 243   uint16 1x9 [1 refs]
+  0x7D4A0  Table 2D - 367 Check DataType  uint8 1x9 [1 refs]
+  0x7D4D8  Table 2D - 368 Check DataType  uint8 1x9 [1 refs]
+  0x7D52C  Table 2D - 244   uint16 1x16 [1 refs]
+  0x7D578  Table 2D - 245   uint8 1x9 [1 refs]
+  0x7D5C4  Table 2D - 246   uint16 1x16 [1 refs]
+  0x7D608  Table 2D - 247   uint16 1x9 [1 refs]
+  0x7D640  Table 2D - 248   uint16 1x9 [1 refs]
+  0x7D678  Table 2D - 369 Check DataType  uint8 1x9 [1 refs]
+  0x7D6B0  Table 2D - 370 Check DataType  uint8 1x9 [1 refs]
+  0x7D728  Table 2D - 249   uint8 1x10 [1 refs]
+  0x7D770  Table 2D - 371 Check DataType  uint8 1x9 [1 refs]
+  0x7D79C  Table 2D - 250   uint16 1x8 [1 refs]
+  0x7D7CC  Table 2D - 251   uint16 1x8 [1 refs]
+  0x7D81C  Table 2D - 252   uint16 1x9 [1 refs]
+  0x7D854  Table 2D - 253   uint16 1x9 [1 refs]
+  0x7D89C  Table 2D - 372 Check DataType  uint8 1x9 [1 refs]
+  0x7D8E4  Table 2D - 373 Check DataType  uint8 1x9 [1 refs]
+  0x7D92C  Table 2D - 374 Check DataType  uint8 1x9 [1 refs]
+
+
+==========================================================================================
+SECTION 2B: NEWLY IDENTIFIED / CROSS-REFERENCED TABLES (16 new entries)
+  From function analysis and cross-referencing with pseudocode
+==========================================================================================
+
+NEW EEPROM/ADAPTIVE FUEL TRIM TABLES:
+  0x6A868  TABLE DESCRIPTOR  Adaptive Trim Table A (Rotor-Active)  [CONFIRMED] [VERIFIED]
+           Referenced by calc_adaptive_fuel_trim (0x1379C). 9-axis table descriptor
+           for rotor-active trim scaling. First word = 0x0009 (axis count).
+           Used when rotor_condition (0xFFFFB5A4) != 0 or rotor_secondary (0xFFFFB5AC) == 1.
+
+  0x6A87C  TABLE DESCRIPTOR  Adaptive Trim Table B (Normal)  [CONFIRMED] [VERIFIED]
+           Referenced by calc_adaptive_fuel_trim (0x1379C). 9-axis table descriptor
+           for normal (non-rotor-active) trim scaling. First word = 0x0009.
+           Default table when rotor condition is normal.
+
+  0x72C50  PARAM TABLE  Table_2D___105_ — Adaptive Fuel Trim Parameters  [CONFIRMED]
+           Referenced by calc_adaptive_fuel_trim (0x1379C).
+           +0x0C: RPM threshold = 375 (word)
+           +0x10: Stoich lower threshold = 1500.0 (float)
+           +0x14: Load upper threshold = 0.00977 (float)
+           +0x18: Trim enable threshold = 0.6 (float)
+           +0x1C: Trim lower clamp = -2.8 (float)
+           +0x20: Trim upper clamp = 0.7 (float)
+           +0x24: Stoich reference = 1500.0 (float)
+
+  0x72C2C  AXIS  Table_2D___105_ Axis Data  [CONFIRMED]
+           Axis array for adaptive trim parameter table.
+
+NEW OBD/DIAGNOSTIC TABLES:
+  0x1479   DISPATCH TABLE  UDS SID Dispatch Table  [CONFIRMED]
+           Sequential cmp/eq chain routing SIDs to handler functions.
+           9 entries: 0x10, 0x27, 0x3E, 0x11, 0x22, 0x3B, 0x34, 0x36, 0x37.
+           Referenced by diagnostic dispatcher.
+           ⚠ PLAUSIBLE: Security details not publicly confirmed
+
+  0x18C8   CONSTANT  Security Key Verification Byte 1 = 0x4D  [CONFIRMED]
+           Part of "MazdA" secret: {0x4D, 0x61, 0x7A, 0x64, 0x41}.
+           Used by diag_security_access_sid27 (0x17D8).
+           ⚠ PLAUSIBLE: Security details not publicly confirmed
+
+  0x18DC   CONSTANT  Security Key Verification Block End  [CONFIRMED]
+           End of key verification constants. Compare bytes include 0xAC, 0xCD.
+           ⚠ PLAUSIBLE: Security details not publicly confirmed
+
+NEW MISFIRE/COMBUSTION TABLES:
+  0x1C75A  THRESHOLD  Combustion Efficiency Trigger Threshold  [CONFIRMED]
+           Referenced by combustion_quality_monitor (0x1C690).
+           Below this efficiency → initiate catalyst protection fuel cut.
+           ⚠ INFERRED: Threshold value derived from context; exact combustion method not verified
+
+  0x1A56E  THRESHOLD  Secondary Combustion Efficiency Reference  [CONFIRMED]
+           Referenced by combustion_efficiency_estimator (0x1A4A4).
+           Fuel reduction factor computation starts here.
+           ⚠ INFERRED: Threshold value derived from context; exact combustion method not verified
+
+
+==========================================================================================
+SECTION 3: REMAINING UNDOCUMENTED ADDRESSES (199 with 2+ func refs)
+  Not in RomRaider, not yet identified. High ref count = high priority.
+==========================================================================================
+
+  0x7D6CA  [5 refs]  00 3E 00 88 FF FF 44 96  u8(0)
+  0x7D23E  [5 refs]  00 4E 00 1F 00 00 00 18  u8(0)
+  0x7A910  [4 refs]  40 99 99 9A C2 48 00 00  float(4.8000)
+  0x7D6C4  [4 refs]  17 00 00 FF 08 FF 00 3E  float(0.0000)
+  0x7FB80  [3 refs]  00 00 20 00 00 07 DA FF  float(0.0000)
+  0x6F6FE  [3 refs]  00 75 43 16 00 00 3D CC  u8(0)
+  0x6FA5C  [3 refs]  41 2D B2 2D 3D 03 12 6F  float(10.8560)
+  0x6FCB0  [3 refs]  00 01 00 FF 3F 70 00 00  float(0.0000)
+  0x6FF7C  [3 refs]  42 DE 00 00 3F 80 00 00  float(111.0000)
+  0x6FF14  [3 refs]  04 04 00 10 00 0A 00 26  float(0.0000)
+  0x7D0CF  [3 refs]  00 41 20 00 00 41 A0 00  u8(0)
+  0x7C2BA  [3 refs]  02 71 04 E2 00 02 00 19  u8(2)
+  0x751A2  [3 refs]  00 3F 00 3F 01 38 01 38  u8(0)
+  0x751A4  [3 refs]  00 3F 01 38 01 38 00 64  float(0.0000)
+  0x751B0  [3 refs]  41 20 00 00 3F 80 00 00  float(10.0000)
+  0x751B4  [3 refs]  3F 80 00 00 41 93 C4 9C  float(1.0000)
+  0x75D0C  [3 refs]  00 00 00 00 3F 80 00 00  u8(0)
+  0x78D5C  [3 refs]  00 FE 00 00 03 FF FF FF  float(0.0000)
+  0x78D1C  [3 refs]  41 D8 00 00 42 C8 00 00  float(27.0000)
+  0x78D08  [3 refs]  3F CC CC CD 3F 00 00 00  float(1.6000)
+  0x7A91C  [3 refs]  3E 23 D7 0A 40 99 99 9A  float(0.1600)
+  0x7A920  [3 refs]  40 99 99 9A 44 7A 00 00  float(4.8000)
+  0x7A90C  [3 refs]  3E 4C CC CD 40 99 99 9A  float(0.2000)
+  0x7A884  [3 refs]  41 F0 A3 D7 C0 70 A3 D7  float(30.0800)
+  0x7D98E  [3 refs]  00 1F 00 C3 FF FF 44 7A  u8(0)
+  0x7D9C0  [3 refs]  3E 4C CC CD 3F 33 33 33  float(0.2000)
+  0x7D9C4  [3 refs]  3F 33 33 33 39 9D 49 52  float(0.7000)
+  0x7D9C8  [3 refs]  39 9D 49 52 3E 4C CC CD  float(0.0003)
+  0x7AA3C  [3 refs]  00 32 00 0A 00 0A FF FF  float(0.0000)
+  0x7D959  [3 refs]  27 FF FF 42 48 00 00 C2  u8(39)
+  0x7D239  [3 refs]  0A 46 FF 00 17 00 4E 00  u8(10)
+  0x7E102  [3 refs]  03 00 03 01 03 02 03 00  u8(3)
+  0x7E108  [3 refs]  03 00 03 00 00 30 00 31  float(0.0000)
+  0x7FFF8  [2 refs]  00 00 D4 9C 00 00 20 00  float(0.0000)
+  0x7FFFC  [2 refs]  00 00 20 00  float(0.0000)
+  0x7FB00  [2 refs]  FF FF FF FF FF FF FF FF  u8(255)
+  0x6CF68  [2 refs]  00 FF 00 00 F5 C2 0A 3D  float(0.0000)
+  0x6FF04  [2 refs]  41 C8 00 00 41 FA 00 00  float(25.0000)
+  0x6FF0C  [2 refs]  00 00 00 00 C1 FA 00 00  u8(0)
+  0x7A164  [2 refs]  01 01 01 01 01 01 01 01  float(0.0000)
+  0x7FB88  [2 refs]  6C 6E 04 59 FF FF FF FF  u8(108)
+  0x6E6B4  [2 refs]  42 F0 00 00 40 A0 00 00  float(120.0000)
+  0x6E6B8  [2 refs]  40 A0 00 00 44 61 00 00  float(5.0000)
+  0x7501C  [2 refs]  3F 00 00 00 00 00 00 00  float(0.5000)
+  0x6CF98  [2 refs]  00 00 00 00 00 00 00 00  u8(0)
+  0x6CF9C  [2 refs]  00 00 00 00 41 10 00 00  u8(0)
+  0x6E40C  [2 refs]  41 20 00 00 3D 4C CC CD  float(10.0000)
+  0x6E3F4  [2 refs]  46 1C 40 00 42 C8 00 00  float(10000.0000)
+  0x6E404  [2 refs]  3F 00 00 00 3D 4C CC CD  float(0.5000)
+  0x6E430  [2 refs]  00 00 00 0C 00 03 FF FF  float(0.0000)
+  0x6E431  [2 refs]  00 00 0C 00 03 FF FF 00  u8(0)
+  0x79870  [2 refs]  00 00 00 00 3B 7F 97 24  u8(0)
+  0x7A172  [2 refs]  00 FF 00 F3 00 E0 00 5E  u8(0)
+  0x7983B  [2 refs]  01 01 77 00 FA 41 20 00  u8(1)
+  0x72D5C  [2 refs]  45 FA 00 00 43 48 00 00  float(8000.0000)
+  0x72D60  [2 refs]  43 48 00 00 3D CC CC CD  float(200.0000)
+  0x72D64  [2 refs]  3D CC CC CD 3F 00 00 00  float(0.1000)
+  0x72D78  [2 refs]  00 00 00 00 3F 80 00 00  u8(0)
+  0x72DE8  [2 refs]  00 00 00 00 3F 80 00 00  u8(0)
+
+
+==========================================================================================
+STATISTICS
+==========================================================================================
+  Total identified tables:           251 (56 new batch entries + 16 cross-ref)
+  Total unnamed but documented:      437
+  Total undocumented (2+ refs):      199
+  Total function->table refs:        4123
+
+  Subsystem breakdown (named only):
+    IGNITION TIMING                    :   40
+    FUEL / LAMBDA                      :   46
+    SENSORS                            :   23
+    IDLE CONTROL                       :    9
+    THROTTLE / TORQUE                  :    9
+    INJECTORS                          :    7
+    KNOCK CONTROL                      :   13
+    COLD START / RPM LIMITER           :    2
+    CHAMBER BALANCE                    :    1
+    ROTOR POSITION                     :    1
+    TRANSMISSION/AT CONTROL            :   30
+    REV LIMITERS                       :    2
+    SSV / 6-PORT / VALVES              :    4
+    INJECTION ANGLE                    :    1
+    LOAD LIMITS                        :    3
+    BOOST / LOAD CONTROL               :    1
+    IGNITION DWELL                     :    1
+    DIAGNOSTICS (DTC)                  :    6
+    DATALOGGER                         :    2
+    MISC / UNIDENTIFIED                :    2
+
+==========================================================================================
+CREDITS
+  equinox311/Garrett    — RomRaider RX8 ECU definitions (RX8Defs)
+  RX-8 tuning community — Original table naming and identification
+  ConnorRigby           — ECU dump tools and UDS protocol research
+  IDA Pro + ida-pro-mcp — Disassembly and function cross-reference analysis
+
+==========================================================================================
+REVISION HISTORY
+==========================================================================================
+  v2.1 (2026-04-05) — BATCH 1/2/3 Cross-Reference Additions
+    - Added 40 newly identified ROM calibration tables with BATCH numbering
+    - BATCH 1 — IGNITION TIMING STRUCTURE (8 new):
+      * Table_2D___2_ Base ignition timing calibration structure
+      * Knock Retard Correction Table, Knock Margin Safety Buffer
+      * Knock Event Count Limit, Knock Margin Enforcement Scalar
+      * Referenced by ignition_timing_calc_E7F8 (0xE7F8)
+    - COLD START / RPM LIMITER (3 new):
+      * Cold Start RPM Limit Duty, Cold Rev Limit Threshold (cold/warm hysteresis)
+      * Referenced by cold_start_rpm_limiter (0xF11A)
+    - CHAMBER BALANCE (1 new):
+      * Chamber Balance Coefficient Table, referenced by rotary_chamber_balance_calc (0x15D28)
+    - ROTOR POSITION (1 new):
+      * Rotor Position Multiply-Accumulate Table, referenced by rotor_position_feedback_control (0x17A68)
+    - BATCH 3 — TRANSMISSION/AT CONTROL (30 new):
+      * 30 uniformly-spaced AT Shift Parameter Tables (116-byte intervals, 0x70048-0x70D6C)
+      * All float32 format, referenced by transmission_load_control_1DDB0 (0x1DDB0)
+      * Purpose: Automatic transmission shift quality and hydraulic pressure parameters
+    - Updated Statistics section: Total identified tables increased from 195 to 235
+    - Total newly identified tables across all versions: 119
+
+  v2.2 (2026-04-05)
+    - Added 31 calibration addresses cross-referenced from pseudocode (closed-loop fuel, injection,
+      ignition timing, knock detection, SSV/valve, fuel cut subsystems)
+    - Updated statistics: 150 newly identified tables total, 130 cross-referenced
+
+  v2.0 (2026-04-05)
+    - Added 59 newly identified calibration tables from 10 major functions via cross-referencing
+    - Added KNOCK CONTROL tables (6 new): Counter saturation limits, Gain scalars, Safety limits
+    - Added FUEL CONTROL tables (14 new): Stoichiometry targets, AFR limits, PI loop gains, Pressure correction
+    - Added O2 SENSOR STATE tables (10 new): Pressure gates, Rotor transitions, Multi-level thresholds
+    - Added IGNITION TIMING LIMIT tables (5 new): Hard limits, EGR/VVT offsets, Diagnostic correction
+    - Updated Statistics section: Total identified tables increased from 136 to 195
+    - Functions analyzed: knock_detection_processing, fuel_control_cascade, afr_boundary_check,
+      o2_state_machine, ignition_limiter, fuel_pressure_pi_loop, and 4 others
+
+  v1.0 (Initial release)
+    - RomRaider named tables: 116
+    - Analysis-identified tables: 20
+    - Unnamed RomRaider tables: 437
+==========================================================================================

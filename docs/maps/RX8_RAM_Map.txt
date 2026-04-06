@@ -308,7 +308,7 @@ Access: Read/Write from knock detection task
 
 0xFFFFA4B4–0xFFFFA571 | Knock Detection Block (190 bytes)
     Type: struct {
-        // Per-Cylinder Knock State (2 cylinders × 25 bytes each)
+        // Per-Rotor Knock State (2 rotors × 25 bytes each)
         struct {
             uint16_t knock_voltage_raw;     // Raw knock sensor ADC value
             float knock_magnitude;          // Calculated knock energy (normalized 0.0-1.0)
@@ -318,8 +318,8 @@ Access: Read/Write from knock detection task
             uint16_t knock_retard_applied;  // Spark retard in 0.1° units (0-500 = 0-50°)
             uint16_t knock_recovery_timer;  // Countdown until advance is restored (ms)
             uint32_t last_knock_timestamp;  // Time of most recent knock event (ms)
-            uint8_t knock_cylinder_id;      // 0 or 1 (which rotor)
-        } cylinder[2];
+            uint8_t knock_rotor_id;         // 0 or 1 (which rotor)
+        } rotor[2];
 
         // Global Knock State
         uint8_t knock_detection_enabled;    // 0=disabled, 1=enabled, 2=suspended
@@ -327,7 +327,7 @@ Access: Read/Write from knock detection task
         uint16_t total_knock_events;        // Sum of all knock detections
         uint8_t padding_10[8];
     } knock_state;
-    Description: Knock sensor processing including per-cylinder detection and adaptive spark retard
+    Description: Knock sensor processing including per-rotor detection and adaptive spark retard
     Access: RW - Managed by knock_detection_processing (0xF770)
     Related Functions:
         - knock_detection_processing (0xF770) - Main knock detection algorithm
@@ -532,7 +532,7 @@ LAMBDA CLOSED-LOOP:
     0xFFFFA390–0xFFFFA3F8   Advanced Lambda State
 
 KNOCK DETECTION:
-    0xFFFFA4B4–0xFFFFA571   Knock Detection Block (per-cylinder)
+    0xFFFFA4B4–0xFFFFA571   Knock Detection Block (per-rotor)
     0xFFFFA564              Knock Counter
 
 REV LIMITER:
@@ -632,7 +632,7 @@ ACCESS PATTERNS & TIMING NOTES
    - Ignition timing (0xFFFFA300-0xFFFFA323): Updated every 10-50ms
    - Lambda PID (0xFFFFA328-0xFFFFA38C): Updated every 100-200ms
    - CAN messages (0xFFFFA170-0xFFFFA18B): Queued every 100-300ms
-   - Knock detection (0xFFFFA4B4-0xFFFFA571): Per-cylinder (~2.5ms at 6000 RPM)
+   - Knock detection (0xFFFFA4B4-0xFFFFA571): Per-rotor (~2.5ms at 6000 RPM)
 
 2. CONCURRENCY HAZARDS
    - Task state flags (0xFFFFA1C0-0xFFFFA1C9) require atomic reads/writes

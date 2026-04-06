@@ -1,0 +1,1146 @@
+================================================================================
+MAZDA RX-8 S1 PCM — COMPLETE FIRMWARE FUNCTION MAP
+ROM: N3J1EL (60E1D400) — EU 6-port 231hp MT, 2004-2008
+CPU: Renesas SH7055 — Big-endian, 16-bit instructions
+Total Functions: ~2,789 (all named, no sub_ prefixes remain)
+Code Range: 0x00000040 - 0x0006C000+
+Calibration Data: 0x6CE00 - 0x7E000
+================================================================================
+
+NOTE: ~780+ functions have NOT been individually audited. Function names marked
+⚠ should be treated as provisional. See RX8_Audit_Report.txt for full verification
+results.
+
+
+1. VECTOR TABLE & EXCEPTION HANDLERS (0x40-0x8F6)
+   Address Range: 0x00000040 - 0x00000900
+   Approximate Function Count: 15 functions
+
+   Key Functions:
+   - vector_trampoline_set_sp (0x40) — Exception vector setup
+   - serial_rx_handler_ch0 — SCI channel 0 receive interrupt
+   - serial_rx_handler_ch1 — SCI channel 1 receive interrupt
+   - serial_rx_handler_ch2 — SCI channel 2 receive interrupt
+   - exception_context_restore — Restore context after exception
+   - fatal_error_infinite_loop — Unrecoverable error handler
+   - reset_handler (0x8B8) — CPU reset entry point
+   - bsc_init (0x8CC) — Bus controller initialization
+   - gpio_init (0x8F6) — GPIO port configuration
+
+   Description: Low-level CPU exception handling, interrupt vectors, and basic
+   hardware initialization. Handles all exceptions including UNDEF, PRIV, FLOAT,
+   BUSERR, and serial channel interrupts.
+
+
+2. HARDWARE INITIALIZATION (0x170-0x636)
+   Address Range: 0x00000170 - 0x00000700
+   Approximate Function Count: 15 functions
+
+   Key Functions:
+   - hw_init_1 (0x170) — First stage hardware initialization
+   - hw_init_2 (0x41C) — Second stage hardware initialization
+   - hw_init_3 (0x3D4) — Third stage hardware initialization
+   - main_init (0x4E0) — Main initialization handler
+   - wdt_init (0x572) — Watchdog timer configuration
+   - cold_start_ram_init (0x5B0) — RAM initialization after cold start
+   - eeprom_read_validate (0x450) — EEPROM read and checksum (See Section 51)
+
+   Description: Multi-stage CPU initialization sequence including bus controller,
+   clock configuration, memory initialization, and watchdog timer setup. Executes
+   during power-on reset before main application loop.
+
+
+3. TASK SCHEDULER & OS (0x3238-0x3F90)
+   Address Range: 0x00003238 - 0x00003F90
+   Approximate Function Count: 20 functions
+
+   Key Functions:
+   - task_context_save_enter — Save CPU context before task switch
+   - task_priority_scheduler (0x3C80) — Priority-based task dispatcher
+   - task_execute_by_index — Execute specific task from queue
+   - task_context_switch (0x3AD8) — Switch between task contexts
+   - interrupt_priority_dispatch (0x3610) — Dispatch by interrupt priority
+
+   Description: Real-time task scheduler with priority queue. Manages task
+   context switching, stack frame management, and interrupt priority handling
+   for the cooperative multitasking system.
+
+
+4. ARITHMETIC & MATH LIBRARY (0x3F9C-0x4C7A)
+   Address Range: 0x00003F9C - 0x00004C7A
+   Approximate Function Count: 20 functions
+
+   Key Functions:
+   - div32_signed (0x3FE8) — 32-bit signed division with remainder
+   - div32_unsigned (0x409C) — 32-bit unsigned division with remainder
+   - mul16_signed_saturated (0x4740) — 16-bit multiply with saturation
+   - memcpy_bytewise_unroll4 — Optimized memory copy with unrolling
+   - shift_left_u32 — Unsigned 32-bit left shift
+   - shift_right_s32 — Signed 32-bit right shift
+
+   Description: Integer arithmetic operations for SH7055 CPU which lacks native
+   32-bit multiply and divide. Includes saturating arithmetic for control
+   calculations and optimized memory operations.
+
+
+5. FPU HELPERS (0x2054-0x2478)
+   Address Range: 0x00002054 - 0x00002478
+   Approximate Function Count: 20 functions
+
+   Key Functions:
+   - fpu_multiply_accumulate (0x2068) — Floating-point MAC operation
+   - fpu_add_float — Add two float values
+   - fpu_sub_float — Subtract two float values
+   - fpu_mul_float — Multiply two float values
+   - fpu_div_float — Divide two float values
+   - fpu_int_to_float (0x2120) — Convert signed integer to float
+   - fpu_float_to_int (0x213C) — Convert float to signed integer
+   - fpu_sqrt_float (0x23F4) — Square root of float value
+   - fpu_abs_float (0x23B0) — Absolute value of float
+
+   Description: Software floating-point library for SH7055 CPU emulation. Provides
+   basic IEEE 754 operations for fuel/ignition calculations that require
+   decimal precision.
+
+
+6. TABLE INTERPOLATION (0x2490-0x26F4)
+   Address Range: 0x00002490 - 0x00002700
+   Approximate Function Count: 15 functions
+
+   Key Functions:
+   - axis_lookup_float_to_index — Find axis index for float value
+   - interp_bilinear_weight_calc — Compute bilinear interpolation weights
+   - table1d_lookup_u8 — 1D table lookup with unsigned 8-bit output
+   - table1d_lookup_u16 — 1D table lookup with unsigned 16-bit output
+   - table2d_axis_resolve — Resolve 2D table axis coordinates
+   - interp_float_array — Interpolate float array values
+   - interp_s16_array — Interpolate signed 16-bit array
+   - interp_u8_array — Interpolate unsigned 8-bit array
+   - interp_u16_array — Interpolate unsigned 16-bit array
+
+   Description: Generic table lookup and interpolation library supporting 1D and 2D
+   tables with various data types. Used throughout fuel/ignition calculation engine.
+
+
+7. PERIPHERAL INITIALIZATION (0x4C80-0x52B0)
+   Address Range: 0x00004C80 - 0x000052B0
+   Approximate Function Count: 30 functions
+
+   Key Functions:
+   - sfr_init_dma_channels — DMA channel controller setup
+   - atu_timer_full_init — ATU2 timer full initialization
+   - sci_all_channels_clock_async — Configure SCI channel clocks
+   - atu_channel_i_config_A — Configure ATU channel I mode A
+   - atu_channel_i_config_B — Configure ATU channel I mode B
+   - atu_channel_i_config_C — Configure ATU channel I mode C
+   - itu0_init_capture_mode — ITU0 capture/compare initialization
+   - itu1_init_wave_output — ITU1 waveform output initialization
+
+   Description: Initialization of on-chip peripherals including DMA, timer units
+   (ATU2, ITU0/1), and SCI serial channels. Configures capture/compare modes
+   for sensor input and output signal generation.
+
+
+8. ATU2 CAPTURE & TIMING (0x6768-0x7094)
+   Address Range: 0x00006768 - 0x00007094
+   Approximate Function Count: 15 functions
+
+   Key Functions:
+   - atu2_capture_snapshot_init — Initialize capture snapshot mode
+   - atu2_channel_mode_full_init — Full ATU2 channel configuration
+   - atu2_capture_irq_handler — Interrupt handler for captures
+   - atu2_read_captures_bank0 — Read capture values from bank 0
+   - atu2_read_captures_bank1 — Read capture values from bank 1
+   - atu2_read_captures_bank2 — Read capture values from bank 2
+
+   Description: Configures Renesas ATU2 (Advanced Timer Unit 2) for precise
+   capture of crank/cam timing edges. Manages triple-bank capture mode for
+   redundant timing measurements and interrupt dispatch.
+
+
+9. ADC & SENSOR INPUT (0x70AC-0x745C)
+   Address Range: 0x000070AC - 0x0000745C
+   Approximate Function Count: 12 functions
+
+   Key Functions:
+   - adc_read_channel — Read ADC value from specified channel
+   - adc_single_convert — Perform single ADC conversion
+   - sensor_calc_interp_ch0 — Calculate interpolated value for channel 0
+   - sensor_calc_interp_ch2 — Calculate interpolated value for channel 2
+   - sensor_calc_freq_ch1 — Calculate frequency from channel 1
+
+   Description: ADC input subsystem for analog sensor reading (TPS, AFR, ECT, IAT).
+   Implements single-conversion mode and frequency-to-value conversion for speed
+   sensors.
+
+
+10. CRANK & IGNITION TIMING (0x74D0-0x8D68)
+    Address Range: 0x000074D0 - 0x00008D68
+    Approximate Function Count: 40 functions
+
+    Key Functions:
+    - crank_subsystem_init — Initialize crank sensing subsystem
+    - crank_position_state_machine (0x789E, 524B) — Track crank position
+    - crank_gap_detect — Detect missing tooth gap
+    - crank_period_calc — Calculate crank period from edge timing
+    - ign_main_task_handler (0x84FE) — Main ignition control task
+    - ign_output_calc_main (0x884C, 580B) — Calculate ignition output timing
+    - ign_dwell_task_handler — Handle ignition dwell control
+
+    Description: Crank angle tracking and ignition output timing. Processes crank
+    position sensor input, detects crank position (0-720 degrees), and calculates
+    spark advance timing for all rotors.
+
+
+11. SENSOR PROCESSING (0x8D68-0x94C6)
+    Address Range: 0x00008D68 - 0x000094C6
+    Approximate Function Count: 15 functions
+
+    Key Functions:
+    - sensor_main_process (0x9070) — Main sensor processing task
+    - sensor_read_and_filter (0x8E60) — Read and apply low-pass filter
+    - sensor_interp_calc (0x91FE, 582B) — Interpolate sensor values
+
+    Description: Filtering and processing of analog sensor inputs. Implements
+    exponential averaging for TPS, ECT, IAT, and pressure sensors to reduce
+    noise and improve control stability.
+
+
+12. FUEL CALCULATION (0x9528-0x9CC4)
+    Address Range: 0x00009528 - 0x00009CC4
+    Approximate Function Count: 8 functions
+
+    Key Functions:
+    - fuel_calc_entry (0x9528) — Entry point for fuel calculation
+    - fuel_calc_per_rotor (0x9534, 262B) — Calculate fuel for one rotor
+    - table_2d_interpolate — 2D fuel map lookup
+    - table_3d_interpolate — 3D fuel map lookup
+
+    Description: Core fuel pulse width calculation from RPM/load table lookups
+    with interpolation. Feeds fuel injector pulse calculator.
+
+
+13. CAN COMMUNICATION (0x9CC6-0xA686)
+    Address Range: 0x00009CC6 - 0x0000A686
+    Approximate Function Count: 25 functions
+
+    Key Functions:
+    - can_tx_abort_and_retry (0x9CC6) — Abort CAN TX and retry (See Section 50)
+    - can_periodic_task_handler (0xA57C) — Periodic CAN message task (See Section 50)
+    - hcan0_mailbox_rotate_enqueue (0xA608) — Rotate mailbox queue (See Section 50)
+    - can_msg_queue_init — Initialize message queue
+    - can_tx_schedule — Schedule CAN transmission
+
+    Messages (from Ghidra cross-validation, standard Mazda CAN IDs):
+    TX from ECU:
+    - ID 0x201 — Engine RPM (bytes 0-1) + vehicle speed (4-5) + throttle (6) + status (7)
+    - ID 0x203 — Engine status pack
+    - ID 0x215, 0x231, 0x240, 0x250, 0x251 — TX data packs
+    - ID 0x420 — MIL/check-engine status
+    - ID 0x620, 0x630, 0x650 — Additional TX packs
+    - ID 0x41  — TX pack
+    RX to ECU:
+    - ID 0x212 — RX main handler
+    - ID 0x216 — RX with plausibility check, fault eval, timer
+    - ID 0x430, 0x47, 0x4B0, 0x4B1, 0x4C0 — RX unpack handlers
+    ⚠ CORRECTED: Previously documented as 0xCA/0xDC — those were WRONG.
+    Values 0xCA/0xDC in disassembly are internal mailbox/queue identifiers,
+    NOT the actual CAN arbitration IDs on the bus.
+
+    Description: High-speed CAN (FlexCAN) communication handler. Manages
+    periodic and event-driven message transmission via standard Mazda 11-bit
+    CAN IDs in the 0x41-0x650 range.
+
+
+14. SERIAL/SCI (0xBE9C-0xC31C)
+    Address Range: 0x0000BE9C - 0x0000C31C
+    Approximate Function Count: 10 functions
+
+    Key Functions:
+    - sci4_init_8n1_115200 — Initialize SCI4 channel at 115200 baud
+    - sci4_tx_data — Transmit data on SCI4
+    - sci4_rx_data — Receive data on SCI4
+    - sci_sync_protocol_handler — Handle synchronous SCI protocol
+
+    Description: Serial communication on SCI channel 4. Configured as 8N1 at
+    115200 baud for diagnostic and calibration download. Uses interrupt-driven
+    receive and polled transmit.
+
+
+15. LAMBDA / O2 FEEDBACK (0xC346-0xC656)
+    Address Range: 0x0000C346 - 0x0000C656
+    Approximate Function Count: 5 functions
+
+    Key Functions:
+    - lambda_control_closed_loop (0xC508) — Closed-loop AFR feedback
+    - rpm_limiter_fuel_cutoff (0xC59E) — Fuel cut at RPM limit
+
+    Description: Oxygen sensor feedback control and AFR regulation. Implements
+    PID feedback loop to maintain stoichiometric combustion. Includes RPM
+    limiting with fuel injection cutoff.
+
+
+16. CAN MAILBOX CONTROL (0xC98A-0xD226)
+    Address Range: 0x0000C98A - 0x0000D226
+    Approximate Function Count: 25 functions
+
+    Key Functions:
+    - can_enable_mailbox_int — Enable mailbox interrupt
+    - can_disable_mailbox_int — Disable mailbox interrupt
+    - can_set_mailbox_mode_dlc — Set mailbox mode and DLC
+    - can_pack_tx_msg — Pack data for CAN transmission
+    - can_mailbox_read_data — Read received CAN message
+    - can_mailbox_write_data — Write CAN message to mailbox
+    - can_mailbox_set_filter — Configure mailbox filter
+
+    Description: Low-level CAN mailbox management. Controls 8-16 configurable
+    mailboxes for receive and transmit, with filtering and interrupt routing.
+
+
+17. FAULT DETECTION & DIAGNOSTICS (0xDDF0-0xE202)
+    Address Range: 0x0000DDF0 - 0x0000E202
+    Approximate Function Count: 10 functions
+
+    Key Functions:
+    - pcm_fault_check_and_clear (0xDDF0) — Check and clear fault codes
+    - multi_sensor_fault_check (0xE56C, 358B) — Check multiple sensors
+
+    6-Gate Logic:
+    - Engine temperature valid
+    - Speed/TPS range valid
+    - CAN data valid
+    - Diagnostic mode enabled
+    - Engine running
+    - System ready flag
+
+    Description: Monitors for fault conditions across sensors, actuators, and
+    communication. Triggers DTC storage when faults detected. 6-gate logic
+    prevents false positives during startup/shutdown.
+
+
+18. IGNITION TIMING CONTROL (0xE24A-0xEBA8)
+    Address Range: 0x0000E24A - 0x0000EBA8
+    Approximate Function Count: 25 functions
+
+    Key Functions:
+    - ignition_timing_calc_E7F8 (0xE7F8, 868B) — Main spark advance calculator
+    - air_fuel_ratio_calc (0xEBA8, 1146B) — AFR feedback (See Sections 37, 49)
+    - ignition_advance_limiter — Limit spark advance by RPM/load
+
+    Description: Advanced spark timing control with load, temperature, and
+    knock compensation. Integrates air/fuel ratio feedback with timing decisions
+    to optimize efficiency and emissions.
+
+
+19. KNOCK DETECTION (0xF770-0xFB68)
+    Address Range: 0x0000F770 - 0x0000FB68
+    Approximate Function Count: 10 functions
+
+    Key Functions:
+    - knock_detection_processing (0xF770, 800B) — Process knock sensor signal (See Section 53)
+    - rpm_limiter_main (0xF192, 454B) — Main RPM limiter
+    - purge_control_state_update (0xF544) — EVAP canister purge control
+
+    Description: Detects engine knock using high-frequency FFT analysis of
+    knock sensor. Implements knock retard logic to prevent detonation while
+    maximizing efficiency.
+
+
+20. INJECTION TIMING (0xFBB6-0xFF76)
+    Address Range: 0x0000FBB6 - 0x0000FF76
+    Approximate Function Count: 10 functions
+
+    Key Functions:
+    - injection_timing_calculator (0xFCE6, 318B) — Calculate injection timing
+    - injection_timing_filter_mask — Apply timing filter mask
+
+    Description: Fuel injection timing relative to rotor position. Rotary
+    engines require dual injection per rotor revolution. Coordinates with
+    ignition timing calculator.
+
+
+21. DIAGNOSTICS & INJECTOR CONTROL (0x1014C-0x10620)
+    Address Range: 0x0001014C - 0x00010620
+    Approximate Function Count: 15 functions
+
+    Key Functions:
+    - diag_run_all_tests (0x1014C) — Execute all diagnostic tests
+    - fuel_injector_pulse_calc (0x10620, 708B) — Calculate injector pulse width
+    - vvt_solenoid_read — Read "VVT" solenoid state (⚠ not actual VVT; see Section 22 note)
+
+    Description: Runs on-board diagnostic tests and calculates fuel injector
+    pulse width. Interfaces with fuel pump relay and injector driver circuits.
+
+
+22. SENSOR FAULT & "VVT" (0x108E4-0x11140)
+    ⚠ UNCERTAIN: "VVT" is a misnomer — the RX-8 Wankel has NO valves.
+    Likely controls intake port geometry, eccentric shaft phase, or emission actuator.
+    Address Range: 0x000108E4 - 0x00011140
+    Approximate Function Count: 10 functions
+
+    Key Functions:
+    - sensor_fault_detect_cyl_selectivity (0x108E4) — Detect per-rotor faults
+    - calc_vvt_error_control_output (0x10DC8, 360B) — VVT solenoid control
+
+    Description: Detects sensor faults with per-rotor resolution. Manages
+    "VVT" solenoid actuation based on timing error feedback.
+    ⚠ Not actual VVT — Wankel has no valves (see Section 22 header note).
+
+
+23. ENGINE CONTROL CORE (0x11166-0x12F5E)
+    Address Range: 0x00011166 - 0x00012F5E
+    Approximate Function Count: 40 functions
+
+    Key Functions:
+    - calc_batch_fuel_injection_map (0x1130E, 512B) — Main fuel calculation
+    - calc_lambda_feedback_pid (0x11A9C) — O2 feedback PID loop
+    - calc_knock_retard_filter — Knock retard low-pass filter
+    - calc_iacv_duty_feedback — Idle air control valve feedback
+    - calc_combustion_efficiency_metric (0x121F0) — Engine efficiency estimate
+
+    Description: Central calculation engine coordinating fuel, spark, and air
+    control. Processes sensor inputs through tables and filters to generate
+    control outputs. Core of closed-loop control strategy.
+
+
+24. IDLE & FUEL TRIM (0x12F5E-0x13A5E)
+    Address Range: 0x00012F5E - 0x00013A5E
+    Approximate Function Count: 15 functions
+
+    Key Functions:
+    - calc_idle_speed_target (0x12F5E) — Target idle RPM calculation
+    - calc_vehicle_speed_filter (0x133F8) — Speed sensor filtering
+    - calc_throttle_position_filter (0x1345C, 376B) — TPS filtering (See Section 34)
+    - calc_evap_purge_duty (0x13652) — EVAP purge solenoid duty
+    - calc_adaptive_fuel_trim (0x1379C, 168B) — Long-term fuel trim (See Section 34)
+    - calc_accel_fuel_enrichment (0x138CC, 228B) — Acceleration enrichment (See Section 34)
+
+    Description: Idle speed targeting, fuel trim adaptation, and purge
+    solenoid control. Maintains idle quality and long-term fuel adaptation.
+
+
+25. FUEL ENRICHMENT & CORRECTION (0x13A5E-0x14BAC)
+    Address Range: 0x00013A5E - 0x00014BAC
+    Approximate Function Count: 30 functions
+
+    Key Functions:
+    - calc_cold_start_fuel_enrichment (0x142E8, 118B) — Cold start enrichment (See Section 34)
+    - calc_wot_fuel_enrichment (0x14220, 118B) — WOT enrichment (See Section 34)
+    - calc_fuel_correction_all_modes (0x12C8C, 614B) — Multi-mode correction
+    - calc_all_rotor_timings (0x14584, 414B) — Rotor timing calculation
+
+    Description: Temperature-dependent fuel enrichment maps and transient
+    correction algorithms. Includes cold start, WOT, and acceleration modes.
+
+
+26. FUEL COMPUTATION (0x14BAC-0x15C1C)
+    Address Range: 0x00014BAC - 0x00015C1C
+    Approximate Function Count: 15 functions
+
+    Key Functions:
+    - dual_channel_fuel_computation (0x14BAC) — Dual injector channel calc
+    - rotary_fuel_enrichment_controller (0x14C2C, 614B) — Rotor-specific control
+    - manifold_pressure_calc_main_15354 (0x15354, 1964B) — Load estimation
+
+    Description: Dual-channel fuel injection computation for rotary port and
+    side injectors. Manifold absolute pressure calculation for load axis
+    determination.
+
+
+27. CHAMBER BALANCE & PRESSURE (0x15D28-0x16A30)
+    Address Range: 0x00015D28 - 0x00016A30
+    Approximate Function Count: 15 functions
+
+    Key Functions:
+    - fuel_pressure_calc (0x15D82, 1130B) — Fuel pressure feedback
+    - dual_rotor_sync_controller (0x16466, 470B) — Synchronize rotor timing
+    - secondary_chamber_controller (0x1671A, 420B) — Leading rotor control
+    - secondary_chamber_ready_check (0x168BE) — Readiness validation
+
+    Description: Manages fuel pressure feedback and chamber balance between
+    primary and secondary combustion chambers. Critical for smooth rotary
+    operation and emissions.
+
+
+28. MAIN ENGINE CONTROL LOOP (0x16AA8-0x17F1C)
+    Address Range: 0x00016AA8 - 0x00017F1C
+    Approximate Function Count: 27 functions
+
+    Key Functions:
+    - engine_control_main_loop (0x16AA8) — 27-function sequential call chain
+    - spark_advance_calc — Spark timing from fuel/load/knock inputs
+    - solenoid_drive_control — Ignition coil and solenoid drivers
+    - fuel_pump_control (0x17510, 496B) — Fuel pump relay management
+    - exhaust_valve_control (0x17700) — Exhaust valve solenoid
+    - intake_air_control (0x177A6, 428B) — Intake air control valve
+    - fuel_pressure_calc (0x15D82, 1130B) — Fuel pressure feedback (See Section 27)
+    - vvt_duty_cycle_calc (0x22534) — VVT solenoid duty cycle
+    - cooling_fan_control (0x17DCC) — Engine cooling fan relay
+    - main_engine_cycle_10ms (0x17F1C) — 10ms cycle task
+
+    Description: Master engine control loop executing all subsystem calculations
+    and actuator commands in coordinated sequence. 27 sequential jsr calls.
+    Core 10ms task scheduler.
+
+
+29. IDLE SPEED CONTROL (0x18054-0x18860)
+    Address Range: 0x00018054 - 0x00018860
+    Approximate Function Count: 10 functions
+
+    Key Functions:
+    - idle_speed_control_18054 (0x18054, 404B) — Main idle control
+    - rotor_position_state_machine (0x1825E, 756B) — Track rotor position
+    - waveform_pattern_generator (0x18552, 754B) — Idle coil pattern
+
+    Description: Maintains idle speed through air control valve and spark
+    timing adjustment. State machine tracks rotor position for coil
+    drive pattern generation.
+
+
+30. ADVANCED TIMING & PURGE (0x18860-0x18F98)
+    Address Range: 0x00018860 - 0x00018F98
+    Approximate Function Count: 10 functions
+
+    Key Functions:
+    - injection_timing_control (0x18860, 398B) — Injection angle control
+    - rotor_sync_position_detector (0x189EE, 522B) — Rotor sync detection
+    - canister_purge_control (0x18F98) — EVAP purge flow rate
+
+    Description: Precise injection angle control and rotor synchronization
+    detection. EVAP system purge solenoid control.
+
+
+31. ENGINE ESTIMATION (0x19000-0x19F96)
+    Address Range: 0x00019000 - 0x00019F96
+    Approximate Function Count: 20 functions
+
+    Key Functions:
+    - exhaust_oxygen_control_19480 (0x19480, 824B) — O2 sensor feedback
+    - fuel_rail_pressure_state_machine (0x197B8) — Fuel pressure regulation
+    - spark_advance_limiter_19BCA (0x19BCA, 532B) — Spark limit enforcement
+
+    Description: Oxygen sensor feedback loop and fuel pressure state machine.
+    Estimates engine load and efficiency from exhaust oxygen content.
+
+
+32. SPARK & ACCELERATION (0x19FC0-0x1AFEE)
+    Address Range: 0x00019FC0 - 0x0001AFEE
+    Approximate Function Count: 30 functions
+
+    Key Functions:
+    - spark_advance_calc_main_1A0C8 (0x1A0C8, 850B) — Primary spark calculator
+    - combustion_efficiency_estimator (0x1A4A4, 734B) — Efficiency estimation (See Section 53)
+    - engine_control_module_init (0x1A840) — ECM initialization
+
+    Description: Advanced spark timing calculations with multiple compensations
+    for load, speed, temperature, and knock. Combustion efficiency feedback.
+
+
+33. DIAGNOSTIC SERVICES (0x1572-0x1DFA)
+    Address Range: 0x00001572 - 0x00001DFA
+    Approximate Function Count: 20 functions
+
+    UDS Services:
+    - SID 0x10 (ECU Reset): Cold/warm/soft/enable RTC reset
+    - SID 0x11 (Clear Diagnostics): Clear all DTCs and freeze frame
+    - SID 0x14 (Read DTC): Read by status mask
+    - SID 0x19 (Read Extended Data): Extended DTC snapshot data
+    - SID 0x22 (Read Data): By data identifier, 0x00-0xFFFF
+    - SID 0x27 (Security Access): Unlock calibration download (Level 1)
+    - SID 0x2E (Write Data): By data identifier with authorization
+    - SID 0x34 (Request Download): Prepare for calibration download
+    - SID 0x36 (Transfer Data): Send blocks during download
+    - SID 0x37 (Request Transfer Exit): Finish download, verify checksum
+
+    Key Functions:
+    - diag_start_session_handler (0x1572) — Session initialization
+    - diag_read_memory_by_addr (0x15CC) — Memory read service
+    - diag_security_access_sid27 (0x17D8, 304B) — Unlock service
+    - diag_request_download_sid34 (0x1A70, 230B) — Download preparation
+    - diag_transfer_data_sid36 (0x1B8C, 256B) — Data transfer blocks
+
+    Description: UDS (Unified Diagnostic Services) protocol handlers for
+    OBD-II diagnostic communication. Supports live data reading, DTC management,
+    security unlock, and calibration download.
+
+
+34. ACCELERATION / TRANSIENT ENRICHMENT (0x12EF2-0x14C2C)
+    Address Range: 0x00012EF2 - 0x00014E92
+    Approximate Function Count: 6 functions
+
+    Key Functions:
+    - calc_accel_fuel_enrichment (0x138CC, 228B) — Main tip-in enrichment calculator
+    - calc_transient_fuel_enrichment (0x12EF2, 108B) — Transient decay counter
+    - calc_throttle_position_filter (0x1345C, 376B) — Mode-dependent IIR TPS filter
+    - calc_wot_fuel_enrichment (0x14220, 118B) — WOT enrichment lookup
+    - calc_cold_start_fuel_enrichment (0x142E8, 118B) — Temperature-based enrichment
+    - rotary_fuel_enrichment_controller (0x14C2C, 614B) — State machine (See Section 26)
+
+    Description: Multi-stage acceleration and transient fuel enrichment system.
+    Coordinates tip-in, WOT, cold-start, and rotary-specific enrichment modes.
+
+35. OIL METERING PUMP CONTROL (0x2602C-0x262FA)
+    Address Range: 0x0002602C - 0x0002634A
+    Approximate Function Count: 4 functions
+
+    Key Functions:
+    - pump_control_output (0x2602C, 70B) — Physical OMP PWM output via Port D bit 11
+    - fuel_pump_rpm_scale (0x262FA, 72B) — RPM-dependent pump speed scaling
+    - wankel_rotary_control (0x1E820, 928B) — Integrated dual-rotor OMP coordination
+    - fuel_calc_per_rotor (0x9534, 262B) — Per-rotor fuel/OMP pulse (See Section 12)
+
+    Description: Oil Metering Pump control for Wankel rotary engine lubrication.
+    Uses 2D load/RPM table (0x790C4) + 1D throttle table (0x79264) with
+    temperature compensation and per-rotor independent duty cycles.
+
+36. EMISSIONS / COMBUSTION MONITORING (0x1C690-0x1DB78)
+    Address Range: 0x0001C690 - 0x0001DD62
+    Approximate Function Count: 4 functions
+
+    Key Functions:
+    - combustion_quality_monitor (0x1C690, 518B) — ⚠ PLAUSIBLE: Catalyst efficiency (See Section 53)
+    - combustion_feedback_calc (0x1D434, 900B) — PID closed-loop O2 feedback
+    - fuel_enrichment_control (0x1DB78, 490B) — Multi-mode enrichment (cold/warm/O2)
+    - vvt_control_calc (0x1C0FA, 652B) — VVT for emission optimization/EGR
+
+    Description: Emissions management including catalyst monitoring, combustion
+    quality assessment, and closed-loop O2 feedback for stoichiometric control.
+
+37. INTAKE MANIFOLD PRESSURE CONTROL (0x10A5C-0x11198)
+    Address Range: 0x00010A5C - 0x000111F0
+    Approximate Function Count: 5 functions
+
+    Key Functions:
+    - calc_manifold_pressure_error_clamp (0x10A5C) — Clamped pressure error (30× gain)
+    - calc_manifold_pressure_error_diff (0x10A88) — Pressure rate-of-change
+    - calc_sensor_pressure_value (0x11198) — Barometric sensor processing
+    - fuel_air_bilinear_interpolation (0xD3DC) — 2D pressure table lookup
+    - air_fuel_ratio_calc (0xEBA8, 1146B) — Dual-rotor AFR feedback (See Section 18)
+
+    Description: Intake manifold pressure calculation, barometric compensation,
+    and SSV 3-state port control (2-port/mixed/6-port).
+
+38. CAN DATA PROCESSING (0x24800-0x2B800)
+    Address Range: 0x00024800 - 0x0002B800
+    Approximate Function Count: ~20 functions
+
+    Key Functions:
+    - can_data_decode (0x24800, 1802B) — CAN payload decode with 6-channel interpolation
+    - fuel_system_health_check (0x25500, 1610B) — Fuel rail pressure/flow validation
+    - can_mailbox_verify_all (0x2B800, 1280B) — HCAN0/HCAN1 mailbox integrity check
+    - fpu_control_calc (0x27000, 464B) — Multi-axis float control value computation
+
+    Description: CAN bus data decoding, fuel system validation, and hardware integrity
+    verification for dual CAN controllers (HCAN0/HCAN1).
+
+39. "VVT" DUTY CYCLE STATE MACHINE (0x2D000)
+    ⚠ UNCERTAIN: "VVT" is a misnomer — likely intake geometry or emission actuator control.
+    Address Range: 0x0002D000 - 0x0002D200
+    Approximate Function Count: 1 function
+
+    Key Functions:
+    - calc_vvt_duty_cycle_state (0x2D000, 458B) — VVT duty cycle state machine
+
+    Description: "VVT" solenoid duty cycle control with state machine-based
+    modulation. ⚠ NOT actual valve timing — Wankel has no valves. Likely
+    controls intake port geometry or emission actuator for optimization.
+
+40. ENGINE CONTROL DISPATCHERS (0x3A2F8-0x3A764)
+    Address Range: 0x0003A2F8 - 0x0003AC00
+    Approximate Function Count: 2 functions
+
+    Key Functions:
+    - control_system_dispatcher (0x3A2F8, 1010B) — Primary real-time engine control dispatcher
+    - extended_control_dispatcher (0x3A764, 1420B) — Secondary dispatcher for diagnostics
+
+    Description: High-level control flow dispatchers routing to 50+ subsystem
+    functions for fuel, emissions, air, and valve control. Primary dispatcher
+    handles continuous engine calculation loops.
+
+41. VARIABLE INTAKE SYSTEM (0x31978)
+    Address Range: 0x00031978 - 0x00032500 (approximate)
+    Approximate Function Count: 1 function
+
+    Key Functions:
+    - massive_fpu_control_calc (0x31978, 1064B) — VIS solenoid control via FPU
+
+    Description: Variable intake system solenoid actuation via FPU-based control
+    calculations for RPM-dependent port switching. Optimizes intake dynamics.
+
+42. ADAPTIVE FUEL CONTROL (0x31DC4)
+    Address Range: 0x00031DC4 - 0x00032700 (approximate)
+    Approximate Function Count: 1 function
+
+    Key Functions:
+    - complex_adaptive_fpu_calc (0x31DC4, 940B) — Dual-path adaptive fuel control via FPU
+
+    Description: Advanced adaptive fuel calculation with dual-path control for
+    primary and secondary injector sizing. Uses FPU for real-time adaptation.
+
+43. SENSOR VALIDATION (0x327C6)
+    Address Range: 0x000327C6 - 0x00033000 (approximate)
+    Approximate Function Count: 1 function
+
+    Key Functions:
+    - extensive_multi_threshold_validation (0x327C6, 218B) — 8-channel sensor validation
+
+    Description: Comprehensive sensor range and validity checking across all
+    input channels with multi-threshold gating logic.
+
+44. MISFIRE & CATASTROPHIC DETECTION (0x45FFC-0x46E44)
+    Address Range: 0x00045FFC - 0x00046E44
+    Approximate Function Count: 2 functions
+
+    Key Functions:
+    - dtc_cat_system_monitor (0x45FFC, 772B) — Catastrophic system monitoring
+    - dtc_p0300_misfire (0x46E44, 514B) — P0300 misfire detection
+
+    Description: Catastrophic failure and misfire detection handlers for DTC
+    generation and severity assessment.
+
+45. SYSTEM RECOVERY (0x4D4C2)
+    Address Range: 0x0004D4C2 - 0x0004E000 (approximate)
+    Approximate Function Count: 1 function
+
+    Key Functions:
+    - recovery_attempt (0x4D4C2, 2600B) — System recovery and fault mitigation
+
+    Description: Comprehensive recovery handler for OMP faults and performance
+    monitoring with adaptive mitigation strategies.
+
+46. ATU2 TIMER CAPTURE / ROTOR POSITION (0x6A70-0x6F3A)
+    Address Range: 0x00006A70 - 0x00006FC2
+    Approximate Function Count: ~10 functions
+
+    Key Functions:
+    - atu2_capture_process_all (0x6A70, 272B) — Sequential capture of all 3 banks
+    - atu2_read_captures_bank0 (0x6BB8, 128B) — Leading rotor edge timestamps (ch 0-3)
+    - atu2_read_captures_bank1 (0x6C70, 144B) — Trailing rotor edge timestamps (ch 4-7)
+    - atu2_read_captures_bank2 (0x6D00, 114B) — E-shaft/cam timestamps (ch 8-11)
+    - atu2_reconfig_mode_bank0 (0x6DA0, 102B) — Timer mode reconfiguration
+    - atu2_edge_capture_config (0x6F3A, 136B) — Rising/falling edge detection config
+
+    Description: ATU-II timer capture for rotor position tracking. 3 banks of 4
+    channels each, storing timestamps to RAM 0xFFFF9EE4+. Mode values control
+    capture resolution (0xC→0x33, 0x8→0x23, etc.).
+
+    *** CODE/DATA BOUNDARY: 0x6CE00 ***
+    Last executable code ends before 0x6CE00 (with FF padding from ~0x6D70).
+    First calibration data at 0x6CE00: "N3J1E_3W.T50" ROM identifier string,
+    followed by "60E1D400" calibration version.
+
+47. COMPUTATION LIBRARY (0x1B000-0x6C000)
+    Address Range: 0x0001B000 - 0x0006C000
+    Approximate Function Count: 950+ functions
+
+    Major Subsections:
+
+    47a. FPU Math Operations (0x1B000-0x1C000) — ~50 functions
+         - Floating-point MAC, trigonometric, logarithmic functions
+         - Complex filter coefficient calculations
+         - Nonlinear fuel/ignition map evaluation
+
+    47b. Table Interpolation Variants (0x1C000-0x1D000) — ~80 functions
+         - Single/dual/triple table lookup implementations
+         - Various input/output size combinations (u8, s16, u16, f32)
+         - Saturation and clipping variants
+
+    47c. Fuel/Ignition Control Callbacks (0x1D000-0x2E000) — ~200 functions
+         - Fuel map evaluation engines (MAP/TPS/RPM axes)
+         - Ignition map evaluation with knock/temperature compensation
+         - Transient fuel correction state machines
+         - Cold start enrichment lookup tables
+         - Wide-open throttle detection and control
+         - Deceleration fuel cutoff logic
+
+    47d. Advanced Control Algorithms (0x2E000-0x3A000) — ~300 functions
+         - PID loop implementations (fuel trim, idle speed, knock retard)
+         - Low-pass filter banks for sensor smoothing
+         - State machine implementations
+         - Limiter/governor logic for RPM, boost, temperature
+         - Compensation matrix calculations
+
+    47e. Calibration Data Access (0x35000-0x4D000) — ~150 functions
+         - ROM table lookup wrappers
+         - Checksum validation for calibration data
+         - Scaling and offset application
+         - Default value fallback handlers
+         - DTC/condition-based table selection
+
+    47f. Sensor Processing & Validation (0x2A000-0x34000) — ~100 functions
+         - Per-sensor fault detection (TPS, AFR, ECT, IAT, etc.)
+         - Sensor range validation
+         - Transition smoothing for mode changes
+         - Averaging/hysteresis implementation
+         - Cross-checks between redundant sensors
+
+    47g. DTC Handlers per P-code (0x46DA0-0x47A2E) — ~120 functions
+         - P0100: Mass Air Flow (MAF) System
+         - P0110: Intake Air Temperature (IAT) Sensor
+         - P0115: Engine Coolant Temperature (ECT) Sensor
+         - P0120: Throttle Position (TPS) Sensor
+         - P0130: O2 Sensor Circuit (Lambda)
+         - P0135: O2 Sensor Heater Circuit
+         - P0200: Fuel Injector Circuit
+         - P0300: Random Misfire
+         - P0301-P0306: Per-Rotor Misfire (OBD standard DTC codes; maps to 4 rotor housing channels)
+         - P0325: Knock Sensor (KS) Circuit
+         - P0335: Crankshaft Position (CKP) Sensor
+         - P0340: Camshaft Position (CMP) Sensor
+         - P0400: EVAP System
+         - P0500: Vehicle Speed Sensor (VSS)
+         - P0600: Serial Communication Link
+         - P0700: Transmission DTC
+         - P0800: Transmission Control System
+         - P1300: Ignition Coil Primary Circuit
+         - P1400: CAN Communication Bus Error
+         - Plus 100+ additional codes
+
+    47h. OBD Service Handlers (0x60000-0x6A000) — ~500 functions
+         - Mode 01: Current Data (Live sensor values)
+         - Mode 02: Freeze Frame (DTC snapshot)
+         - Mode 03: DTC Storage/Retrieval
+         - Mode 04: Clear Diagnostic Information
+         - Mode 05: O2 Sensor Monitoring
+         - Mode 06: On-Board Monitoring Data
+         - Mode 07: Emission-Related Pending DTCs
+         - Mode 08: Emission Control System Test
+         - Mode 09: Vehicle Information
+         - Mode 0A: Permanent DTCs
+         - Per-service encoding/decoding functions
+
+    47i. CAN Message Encoding (0x62000-0x6C000) — ~60+ handlers
+         - Message formatters for each CAN ID
+         - Multi-frame message packers
+         - Periodic and event-based transmission wrappers
+         - Message priority queue management
+         - Acknowledgment and timeout handlers
+
+    Description: Large library of computation and service functions organized by
+    feature area. Includes mathematical functions, control algorithm
+    implementations, diagnostic service handlers, and CAN message encoders.
+    This section contains the bulk of the firmware logic for engine control.
+
+
+48. CALIBRATION DATA (0x6CE00-0x7E000)
+    Address Range: 0x0006CE00 - 0x0007E000
+    Data Type: ROM calibration tables (not executable code)
+    Approximate Size: 0x11200 bytes (70 KB)
+
+    Table Categories:
+
+    35a. Fuel Calculation Tables — ~40 tables
+         - Base fuel map (RPM vs. MAP/TPS)
+         - Cold start enrichment (vs. ECT)
+         - WOT enrichment (vs. RPM)
+         - Acceleration enrichment (vs. TPS delta)
+         - Deceleration fuel cutoff thresholds
+         - Injector scaling and offset tables
+
+    35b. Ignition Timing Tables — ~35 tables
+         - Base spark advance (RPM vs. MAP/load)
+         - Knock retard table (RPM vs. detonation level)
+         - Cold start timing advance
+         - Temperature compensation (ECT vs. offset)
+         - Speed density calculations
+
+    35c. Sensor Calibration — ~25 tables
+         - TPS linearization (raw ADC vs. percent)
+         - ECT lookup (thermistor resistance vs. temperature)
+         - IAT lookup (thermistor resistance vs. temperature)
+         - AFR sensor transfer function
+         - Manifold pressure (MAP) calibration
+
+    35d. Idle Speed Tables — ~15 tables
+         - Target idle speed vs. ECT
+         - IACV duty cycle vs. load
+         - Air control valve position
+
+    35e. Emissions & Control — ~20 tables
+         - EVAP canister purge duty vs. conditions
+         - EGR flow control
+         - Secondary air injection timing
+         - Catalyst protection thresholds
+
+    35f. Engine Limits — ~10 tables
+         - RPM limiter soft/hard limits
+         - Fuel pressure limits
+         - Temperature cutoff thresholds
+         - Boost pressure limits
+
+    Total Named Tables: 136 RomRaider format
+    Unnamed Tables: 437 discovered during analysis
+    Newly Identified: 59 additional control tables
+
+    Description: ROM calibration data used throughout engine control
+    calculations. Includes fuel maps, ignition maps, sensor calibration,
+    idle control, and emissions system parameters. Accessible to all
+    calculation routines via table lookup functions.
+
+
+================================================================================
+FIRMWARE SUMMARY STATISTICS
+================================================================================
+
+Code Metrics:
+   Total Functions: ~2,789 functions
+   Code Size: ~0x6C000 bytes (~430 KB)
+   Address Range: 0x00000040 - 0x0006C000
+
+Calibration & Data:
+   Calibration Data: ~0x11200 bytes (~70 KB)
+   Address Range: 0x006CE00 - 0x007E000
+
+Total ROM Usage:
+   Total ROM Size: 0x80000 bytes (512 KB)
+   Code Utilization: ~84%
+   Calibration Utilization: ~14%
+   Reserved/Unused: ~2%
+
+CPU & Architecture:
+   Processor: Renesas SH7055 16-bit RISC
+   Instruction Set: SH-2 (16-bit instructions)
+   Byte Order: Big-endian
+   Clock: ~20 MHz
+
+Subsystem Breakdown:
+   - Low-level Hardware/Boot: 30 functions
+   - Task Scheduler & Real-time OS: 20 functions
+   - Mathematical Library: 40 functions
+   - Floating-Point Support: 20 functions
+   - Table Interpolation: 15 functions
+   - Peripheral Initialization: 30 functions
+   - Timing Capture & Crank: 55 functions
+   - Sensor Input & Processing: 27 functions
+   - Fuel & Ignition Core: 8 functions
+   - CAN Communication: 50 functions
+   - Serial/Diagnostic: 30 functions
+   - Control Algorithms: 200+ functions
+   - Computation Library: 950+ functions
+   - Diagnostic Services: 20 functions
+   - Engine Control Logic: 400+ functions
+   - Calibration Tables: 573 named+unnamed tables
+
+Key Features:
+   - Real-time multitasking with priority scheduling
+   - Dual rotor engine (sequential fuel/ignition control)
+   - Closed-loop lambda/O2 feedback
+   - Knock detection and retard control
+   - Full OBD-II diagnostic support
+   - UDS/CAN calibration download capability
+   - Cold start, idle, and transient enrichment
+   - Advanced spark timing with multiple compensations
+   - Comprehensive fault detection (6-gate logic)
+   - Rotary chamber balance management
+
+
+49. MAF / AIRFLOW SENSOR PROCESSING (0x1332C-0x24400)
+   Address Range: 0x00001332C - 0x000244A0
+   Approximate Function Count: 12 functions
+
+   Key Functions:
+   - calc_maf_sensor_flow (0x1332C) — MAF linearization + cold-start compensation
+   - maf_sensor_correction_24234 (0x24234) — O2 feedback + MAP correction
+   - maf_sensor_dispatcher_222C4 (0x222C4) — Crankshaft-synchronized scheduler
+   - maf_sensor_init_44CE0 (0x44CE0) — Cold-start initialization
+   - load_calc_maf_479BC (0x479BC) — MAF-based load calculation
+   - air_fuel_ratio_calc (0xEBA8, 1146B) — AFR feedback (See Section 18)
+   - sensor_main_process (0x9070) — Sensor multiplexer (See Section 11)
+   - sensor_interp_calc (0x91FE, 582B) — Sensor interpolation (See Section 11)
+   - sensor_channel_update (0x914C) — Fast sensor delta update
+   - sensor_read_and_filter (0x8E60) — ADC reading (See Section 11)
+
+   Description: Complete MAF sensor pipeline from raw ADC through linearization,
+   temperature compensation, O2 feedback correction, manifold pressure trim,
+   and transient enrichment to final corrected airflow output.
+
+   ROM Tables: 0x69F72-0x69FEA (7 linearization tables), 0x6ACCE-0x6AD0C (4 correction tables)
+   RAM Variables: 0xFFFFB3FC (raw), 0xFFFFB494 (corrected output), 0xFFFFA470-0xFFFFA47C (AFR targets)
+
+
+50. CAN BUS DETAILED COMMUNICATION (0x9CC6-0xE074)
+   Approximate Function Count: 15+ functions (core message handling)
+
+   Note: Detailed breakdown of CAN communication (See Sections 13 and 16 for main functions)
+
+   Core Functions (with advanced details):
+   - can_periodic_task_handler (0xA57C) — 10ms periodic CAN task
+   - hcan0_mailbox_rotate_enqueue (0xA608) — Round-robin TX scheduler
+   - can_tx_abort_and_retry (0x9CC6) — TX error recovery
+   - can_tx_queue_retry_all (0xE074) — Scan 22 mailboxes for retry
+   - can_pack_tx_msg_copy (0xCEF4) — TX marshaling
+   - can_mailbox_extract_msg_data (0xCFF6) — RX unmarshaling
+   - can_serial_communication_handler (0xBB6C) — DMA/SCI integration
+   - hcan_init_and_status_check (0xD6A0) — 0x55AA init sequence
+   - can_init_mailbox_irq_mask (0xCD12) — Priority/IRQ setup
+
+   Description: Dual HCAN controller management with 16+6 mailbox TX queues,
+   300ms timeout scheduling, round-robin rotation, and automatic retry on failure.
+   ROM message queues at 0x4E960 (HCAN0, 16 entries) and 0x4EC60 (HCAN1, 6 entries).
+
+
+51. EEPROM / ADAPTIVE LEARNING (0x450-0x1387E)
+   Approximate Function Count: 8 functions
+
+   Note: Detailed breakdown of EEPROM subsystem (See Section 2 for initialization)
+
+   Key Functions:
+   - eeprom_read_validate (0x450) — Cold-start EEPROM load + validation
+   - is_eeprom_valid (0x624) — EEPROM integrity check
+   - validate_data_block_header (0x636) — Block header validation
+   - spi_set_clk_high_wait (0x9C0) — SPI clock high + timing delay
+   - spi_set_clk_low_wait (0x9DE) — SPI clock low + timing delay
+   - eeprom_write_verify_bytes (0x9FC2) — Write + readback verify
+   - calc_adaptive_fuel_trim (0x1379C, 168B) — Fuel trim (See Section 24)
+
+   Description: Complete EEPROM management subsystem from SPI bit-bang I/O
+   through validation to adaptive fuel trim calculation. ABLIC S-93C56C chip
+   (256 bytes) stores immobilizer keys, vehicle ID, and adaptive learning data.
+
+   ROM Tables: 0x6A868, 0x6A87C (table descriptors), 0x72C50 (parameters)
+   RAM Variables: 0xFFFFDFE4 (mirror), 0xFFFFA718-0xFFFFA730 (trim outputs)
+
+
+52. OBD-II / UDS DIAGNOSTIC SERVICES (0x1479-0x1D00)
+   Approximate Function Count: 12 functions
+
+   Note: Diagnostic services detailed breakdown (See Section 33 for main services)
+
+   Key Functions:
+   - diag_dispatcher (0x1479) — SID dispatch table (cmp/eq chain)
+   - DiagnosticSessionControl (0x1572) — Session management
+   - ECUReset (0x1970) — ECU reset handler
+   - SecurityAccess (0x17D8, 304B) — Seed-key authentication
+   - ReadDataByIdentifier (0x19DA) — DID read (VIN, CalID)
+   - TesterPresent (0x1908) — Keep-alive service
+   - RequestDownload (0x1A70, 230B) — Flash download initiation
+   - TransferData (0x1B8C, 256B) — Chunked flash data transfer
+   - RequestTransferExit (0x1CB8) — Flash finalization + checksum
+   - MazdaCustom_3B (0x1A42) — Unknown Mazda-specific service
+   - BootloaderEntry_B1 (0x1D00) — Bootloader mode entry
+   - ClearDTC (0x5647E) — Clear diagnostic information
+
+   Description: Full UDS diagnostic protocol implementation over CAN (0x07E0/0x07E8).
+   Security access uses 64-iteration bit-manipulation on 24-bit seed with "MazdA"
+   secret (⚠ PLAUSIBLE: not publicly confirmed). Session codes 0x81/0x85/0x87
+   (⚠ UNVERIFIABLE: firmware-derived, no public source). Flash programming
+   protects first 8KB (⚠ PLAUSIBLE: general SH7055 boot block, not RX-8 specific).
+
+   ROM Tables: 0x1479 (dispatch), 0x18C8-0x18DC (security constants)
+   RAM Variables: 0xFFFFDFB0-B5 (session), 0xFFFFD3F0 (buffer)
+
+
+53. MISFIRE DETECTION & CATALYST PROTECTION (0xF770-0x23B62)
+   Approximate Function Count: 8+ functions
+
+   Note: Advanced misfire system breakdown (See Sections 19 and 36 for main functions)
+
+   Key Functions:
+   - knock_detection_processing (0xF770, 800B) — Knock/misfire detection (See Section 19)
+   - combustion_efficiency_metric (0x121F0) — Efficiency calculation (See Section 23)
+   - combustion_chamber_temp (0x12938) — ⚠ PLAUSIBLE: Chamber temp estimation (helper functions obscure calculation)
+   - combustion_quality_monitor (0x1C690, 518B) — ⚠ PLAUSIBLE: Quality tracking (FPU chain too complex to trace; See Section 36)
+   - combustion_efficiency_estimator (0x1A4A4, 734B) — Efficiency + fuel cut (See Section 32)
+   - misfire_threshold_gate (0x23B62) — ⚠ LOW CONFIDENCE: Simple float threshold gate only, NOT comprehensive misfire detection
+   - saturated_add_u16 (0x2460) — Saturated counter increment
+   - misfire_detection_control (0x1CD32) — DTC P0301-P0304 setting
+
+   Description: Comprehensive misfire detection and catalyst protection system.
+   Uses piezoelectric knock sensor analysis + combustion efficiency monitoring.
+   Per-rotor (4 virtual chambers) with saturated counters. Catalyst protection
+   via progressive fuel reduction (⚠ INFERRED: 25%/50%/75% rates not directly verified).
+   Catalyst temperature thresholds (⚠ INFERRED: 900/1000/1100°C not confirmed in ROM).
+   Critical for Wankel rotary engines.
+   DTC codes: P0300-P0304 (misfire), P0420/P0421/P0430 (catalyst).
+
+   ROM Tables: 0x1680000 (knock threshold), 0x4ECE0 (timing map), 0x4ECC0 (VVT mask)
+   RAM Variables: 0xFFFFA564 (knock counter), 0xFFFFA896/897 (misfire counts),
+                  0xFFFFA5FC-61C (efficiency), 0xFFFFA658 (chamber temp)
+
+
+================================================================================
+NEW SUBSYSTEMS (from Ghidra cross-validation + IDA batch scan, 2026-04-05)
+See RX8_New_Subsystems_From_Ghidra.txt for detailed decompilation analysis.
+================================================================================
+
+S1. FUEL CUT CENTRAL ARBITRATOR
+    IDA Functions (N3J1EL addresses):
+    - rpm_limiter_fuel_cutoff (0xC59E) — Rev limiter path (See Section 8)
+    - rpm_rev_limiter_47AF8 (0x47AF8) — Secondary rev limiter
+    - rev_limit_check_dispatch_2E014 (0x2E014) — Dispatch
+    - rev_limit_0x59440 (0x59440) — Status check
+    Ghidra confirms: 30+ fuel cut functions with central arbitrator,
+    13+ independent sources, 2-bit per-rotor output.
+
+S2. DSC TRACTION CONTROL
+    IDA Functions:
+    - Not individually identified in IDA for N3J1EL (different addresses)
+    Ghidra confirms: 14 functions for timing derate (L+T), per-rotor
+    fuel cut, throttle intervention, CAN communication with DSC module.
+
+S3. ALTERNATOR CONTROL
+    IDA Functions:
+    - alternator_output_0x59C36 (0x59C36) — Output control
+    Ghidra confirms: 15-function PID chain for voltage regulation,
+    fault detection, warning light, OBD Mode22 PID.
+
+S4. CRUISE CONTROL
+    IDA Functions:
+    - cruise_control_check_0x4FD4C (0x4FD4C) — State check
+    - cruise_status_0x5AFE2 (0x5AFE2) — Status reporting
+    Ghidra confirms: 22+ function torque-based system with P+FF control,
+    speed target, button debounce, overshoot/undershoot monitoring.
+
+S5. COOLING FAN CONTROL (EXPANDED)
+    IDA Functions:
+    - cooling_fan_control_0x17DCC (0x17DCC) — Main fan controller
+    - read_radiator_fan_state (0x11E6E) — Read fan state
+    - aux_fan_control_task (0x1AED2) — Auxiliary fan
+    - fan_control_limit_calc_1C386 (0x1C386) — Limit calculator
+    - fan_speed_calc_1ED40 (0x1ED40) — Speed calculation
+    - cool_fan_control_logic_259C0 (0x259C0) — Control logic
+    - fan_speed_control_3F050 (0x3F050) — Speed controller
+    - fan_control_logic_0x504A2 (0x504A2) — Logic handler
+    8 functions total — more complex than originally documented.
+
+S6. STARTUP & ENRICHMENT
+    IDA Functions:
+    - engine_startup_initialization (0xAD5A) — Init
+    - startup_warmup_init_23084 (0x23084) — Warmup init
+    - startup_cold_enrichment_47B10 (0x47B10) — Cold enrichment
+    - startup_crank_fuel_47DBA (0x47DBA) — Cranking fuel
+    - startup_prime_pump_47EF2 (0x47EF2) — Fuel pump prime
+    - startup_sequence_0x5472E (0x5472E) — Sequence handler
+    - calc_accel_fuel_enrichment (0x138CC) — Accel enrichment
+    - calc_wot_fuel_enrichment (0x14220) — WOT enrichment
+    - calc_cold_start_fuel_enrichment (0x142E8) — Cold start
+    - calc_transient_fuel_enrichment (0x12EF2) — Transient
+    - after_start_fuel_enrichment_task (0x1A95C) — After-start
+
+S7. EVAP PURGE
+    IDA Functions:
+    - calc_evap_purge_duty (0x13652) — Purge valve duty cycle
+    - evap_system_control_0x4F750 (0x4F750) — System controller
+
+S8. TORQUE MANAGEMENT
+    IDA Functions:
+    - torque_calc_with_damping (0x17952) — Damped torque calculation
+    - torque_dispatcher_225A2 (0x225A2) — Torque dispatch
+    - torque_demand_calc_225C8 (0x225C8) — Demand calculator
+    - transmission_torque_calc_227AC (0x227AC) — Transmission interface
+    - torque_limit_multipoint_2E4C4 (0x2E4C4) — Multi-point limiter
+    - ev_torque_smooth_48F98 (0x48F98) — Smoothing filter
+    - torque_output_0x58E40 (0x58E40) — Final output
+
+S9. VEHICLE DYNAMICS
+    IDA Functions:
+    - vehicle_lateral_acceleration_calc (0x1A040)
+    - longitudinal_accel_derivative_calc (0x1A066)
+    - vertical_accel_derivative_calc (0x1A084)
+    - rollover_detection_accel_check (0x1A0AA)
+    Note: Accelerometer-based stability detection for DSC interface.
+
+
+================================================================================
+END OF FIRMWARE FUNCTION MAP
+================================================================================

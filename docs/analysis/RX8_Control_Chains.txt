@@ -465,7 +465,7 @@ Sequence:
      - Retards timing when cold for startup stability
 
   7. Apply VVT phase adjustment
-     - Corrects for variable valve timing offset
+     - Corrects for "VVT" phase offset (⚠ NOT valve timing — Wankel misnomer)
 
   8. Enforce safety boundaries
      - Clamps timing within mechanical limits

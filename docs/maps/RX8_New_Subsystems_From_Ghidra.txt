@@ -1,0 +1,372 @@
+================================================================================
+RX-8 S1 PCM — NEW SUBSYSTEMS IDENTIFIED VIA GHIDRA CROSS-VALIDATION
+================================================================================
+Source: Ghidra MCP decompilation of 60E0FC00.bin (community Ghidra project)
+Date: 2026-04-05
+Purpose: Documented subsystems NOT previously covered in our IDA analysis.
+         These exist in both firmware families but our analysis missed them.
+
+NOTE: Addresses below are from 60E0FC00 firmware (N3Z2EB US 4-port AT).
+      Our target firmware N3J1EL (60E1D400) will have DIFFERENT addresses
+      for the same functions due to ~93% code difference between families.
+      Cross-reference by FUNCTION NAME and PURPOSE, not by address.
+
+================================================================================
+1. FUEL CUT ARCHITECTURE — CENTRAL ARBITRATOR WITH PER-ROTOR CONTROL
+================================================================================
+
+1.1) OVERVIEW
+  The fuel cut system is far more complex than a simple rev limiter.
+  It uses a CENTRAL ARBITRATOR that merges 13+ independent fuel cut
+  request sources into a 2-bit PER-ROTOR output:
+    Bit 0 = Rotor A fuel cut request
+    Bit 1 = Rotor B fuel cut request
+  This means fuel can be cut to INDIVIDUAL ROTORS independently.
+
+1.2) CENTRAL ARBITRATOR — arbitrateFuelCut (0xE2D8)
+  Decompilation reveals:
+  - Reads 13+ independent boolean flags from RAM
+  - OR's them into a 2-bit ushort result written to output RAM address
+  - First block (bit 0): ~12 flags for rotor A cut
+  - Second block (bit 1): ~12 flags for rotor B cut (partially overlapping)
+  - Some flags are shared (both rotors), some are per-rotor only
+  - Output values: 0=no cut, 1=rotor A only, 2=rotor B only, 3=both rotors
+
+1.3) FUEL CUT SOURCES (13+ identified)
+  Source                              Function                              Notes
+  ─────────────────────────────────── ───────────────────────────────────── ─────────────────────
+  Rev limiter                         calculateRevLimiterFuelCut (0xEEFE)   Two thresholds: cold
+                                                                            limit + normal limit,
+                                                                            each with debounce RPM
+                                                                            hysteresis. Request
+                                                                            timer with saturated
+                                                                            16-bit counter.
+  Throttle lift-off                   throttleLiftFuelCutSomething (0x42BF6) Multi-condition:
+                                      throttleLiftCountersandConditions      requires fuel cut
+                                      throttleLiftInitStuff                  allowed flag + RPM
+                                      throttleLiftoffRelated                 above threshold +
+                                                                             load below threshold.
+                                                                             Saturated 8-bit
+                                                                             counter for holdoff.
+  DSC (traction control)              arbitrateDSCFuelCut (0x2D1C0)         Per-rotor bitmask:
+                                      dscPerRotorCut (0x2D0CE)              param<4: bit0→rotorA,
+                                                                            bit1→rotorB. DSC mode
+                                                                            0x02→single rotor,
+                                                                            0x04→both rotors.
+  Load-based                          calculateFuelCutLoadBased (0x4615C)   3 RPM thresholds:
+                                                                            >3000 RPM, >1150 RPM,
+                                                                            vehicle speed >80kph.
+                                                                            Throttle plate OOR
+                                                                            detection with dual
+                                                                            plate counters.
+                                                                            2D lookup: RPM→load
+                                                                            limit calibration.
+  Vehicle speed + braking             vehicleSpeedAndBrakingFuelCut (0x127E8) Speed-based timer
+                                                                             with countdown. Cut
+                                                                             when vehicle moving
+                                                                             AND fuel_cut_allowed.
+  Speed-based                         speedBasedFuelCutSomething (0xE564)   Separate from vehicle
+                                                                            speed/braking.
+  Throttle plate                      throttlePlateSomethingFuelCut (0xE914) Throttle position
+                                                                             based cut.
+  Per-rotor level 1                   setPerRotorLevel1FuelCut (0x4653E)    Progressive level 1
+                                      updateFuelCutPerRotorCalType (0x46492) cut per rotor with
+                                                                             calibration type.
+  Plausibility                        getPlausibilityFuelCutFuelResumeEnrichment (0x4A0D8)
+                                                                            Validates fuel cut
+                                                                            request is plausible
+                                                                            before allowing resume.
+  Condition-based                     fuelCutCondtionRelated (0x143D2)      Generic condition gate.
+                                      evaluateFuelCutCondtionUnknown (0x198FA)
+  Driver request                      setFuelCutDriver (0xFB90)            Driver-initiated cut.
+  Timer after reset                   fuelCutTimerAfterReset (0x4997C)     Post-reset holdoff.
+
+1.4) PER-ROTOR FUEL CUT WRAPPER — perRotorFuelCut (0x21762)
+  - Protected by getSR/setSR (interrupt protection, critical section)
+  - Handles structure values: 0, 6, 0xC, 0x12 (rotor timing events)
+  - Values 0 and 6 → process fuelCutArbitration + fuelCutSomethingSomething
+  - All values → process dscPerRotorCut
+  - Then calls arbitrateFuelCut to merge all flags
+
+1.5) FUEL CUT INITIALIZATION
+  - fuelCutVariableInit (0x498E0): Zero all fuel cut flags
+  - initFuelCutStuff (0x49CB6, 0x49CEC): Two-phase init
+  - revLimitFuelCutInit (0xEE68): Rev limiter specific init
+
+1.6) FUEL CUT → RESUME ENRICHMENT
+  - getPlausibilityFuelCutFuelResumeEnrichment (0x4A0D8)
+  - When fuel cut is released, extra fuel is injected briefly to prevent
+    lean spike. Plausibility check ensures this enrichment is safe.
+
+
+================================================================================
+2. DSC (DYNAMIC STABILITY CONTROL) — FULL TORQUE INTERVENTION
+================================================================================
+
+2.1) OVERVIEW
+  DSC uses THREE simultaneous torque reduction methods:
+  a) Ignition timing retard (separate for leading and trailing plugs)
+  b) Per-rotor fuel cut (individual rotor cut via bitmask)
+  c) Throttle intervention (DBW throttle reduction)
+
+2.2) TIMING DERATE
+  calculateDSCLeadingTimingDerate (0x121A4):
+    - Reads DSC request via isNotZero_wDivideByZero_Protect
+    - Compares against threshold (DAT_00012280)
+    - Two paths:
+      a) Active DSC intervention: calls modifyTiming() with TCS conditional value
+      b) Normal/recovery: saturate timing between min and max bounds
+    - Uses ign_leading_min_normal_op calibration for floor
+    - default_timing_leading_min for DSC active minimum
+
+  calculateDSCTrailingTimingDerate (0x12294):
+    - Mirror of leading function but for trailing plugs
+    - Calls modifyTrailingTiming() instead
+    - Uses off_throttle_leading_timing_min calibration
+    - Separate min/max bounds for trailing derate
+
+2.3) DSC FUEL CUT
+  dscPerRotorCut (0x2D0CE):
+    - Input param: rotor timing event (0, 6, 0xC, 0x12)
+    - Reads DSC mode byte:
+      0x00 → no cut (both rotors = 0)
+      0x02 → single rotor cut (both bytes = 1)
+      0x04 → both rotors cut (both bytes = 3)
+    - Calls arbitrateDSCFuelCut with per-rotor bitmask
+    - Followed by arbitrateFuelCut(1) to merge into central arbiter
+
+  arbitrateDSCFuelCut (0x2D1C0):
+    - Splits param_1 into bit 0 → rotor A, bit 1 → rotor B
+    - Writes individual rotor cut flags to separate RAM addresses
+    - param < 4 enforced (safety check)
+
+2.4) DSC MODE FLAGS
+  DSC_checkIfMode_x10 (0x2BEFA): Check if DSC mode bit 4 set
+  DSC_checkIfMode_x20 (0x2BEDC): Check if DSC mode bit 5 set
+  DSC_checkIfMode_x40 (0x2BEA8): Check if DSC mode bit 6 set
+  DSC_checkIfMode_x80 (0x2BE16): Check if DSC mode bit 7 set
+  → DSC mode is a bitmask with at least 4 active bits
+
+2.5) DSC CAN COMMUNICATION
+  updateDSCRelatedCANStuff (0x2AA02): CAN message exchange with DSC module
+  dscRelatedTiming (0x18D3C): Timing coordination with DSC module
+  dscMapSelectModex20 (0x2CFFA): Map selection based on DSC mode 0x20
+
+2.6) DSC INITIALIZATION
+  dscDerateInit (0x2CE0C): Zeros 5 state flags for DSC derate system
+
+
+================================================================================
+3. ALTERNATOR CONTROL — PID VOLTAGE REGULATION
+================================================================================
+
+3.1) MAIN CALL CHAIN — alternatorControlMain (0x270EA)
+  Sequential execution (all in critical section via getSR/setSR):
+    1. getAlternatorFaultStatus         — Read fault flags
+    2. calculateECMOverVolt             — ECM overvoltage detection
+    3. getAlternatorSpeedConditonal     — Speed-dependent control
+    4. getVehicleConditionforAlternatorControl — Engine state check
+    5. calculate12VBatteryTemperature   — Battery temp estimation
+    6. altneratorVoltageController      — PID voltage regulation core
+    7. calculateAlternatorDiagDCOutput  — Diagnostic duty cycle output
+    8. calculateOutputforAlternator     — Final hardware output
+    9. setAlternatorFault               — Set fault flags if needed
+
+3.2) KEY FUNCTIONS
+  calcDesiredAlternatorVoltage (0x26520): Target voltage calculation
+    - Adjusts for battery temperature, engine speed, electrical load
+  getAlternatorFaultStatus (0x26298): Fault detection (over/undervoltage)
+  getAlternatorSpeedConditonal (0x26308): Speed-dependent enable
+  setAlternatorWarningLight (0x27084): Dashboard warning lamp control
+  alternatorPIDsomething (0x5B394): PID controller internals
+  diagAlternatorSignalthing (0x5AFF0): Diagnostic signal processing
+
+3.3) OBD INTEGRATION
+  Mode22PIDAlternatorDC (0x553D6): OBD Mode22 PID for alternator duty cycle
+    - Available for datalogging via diagnostic tool
+
+3.4) TUNING RELEVANCE
+  Alternator load affects idle stability and engine torque.
+  At high electrical loads, the ECU increases idle speed and adjusts
+  fuel/timing to compensate for the mechanical drag of the alternator.
+
+
+================================================================================
+4. CRUISE CONTROL — TORQUE-BASED CONTROL
+================================================================================
+
+4.1) MAIN CALL CHAIN — cruiseControlMain (0x2EB40)
+  27 sequential function calls (all in critical section):
+    1. [unnamed function]
+    2. calculateCruiseControlDisableCondition   — Safety checks
+    3. cruiseControlUndershootingPlausibilityMon — Too-slow detection
+    4. cruiseControlOvershootPlausibilityMon     — Too-fast detection
+    5. getCruiseControlAllowedBool              — System enable check
+    6. [unnamed function]
+    7. cruiseControllAccelResCheck               — ACCEL/RES button logic
+    8. [unnamed function]
+    9. cruiseControlACCELRESAllowed              — Button debounce check
+   10. debounceCruiseControlSET                  — SET button debounce
+   11. debounceCruiseControlACCELRES             — ACCEL/RES debounce
+   12. cruiseControlSetRealted                   — SET processing
+   13. calculateCruiseControlSpeedTarget         — Speed setpoint calc
+   14. [unnamed function]
+   15. calculateCruiseControlFFTorque            — Feedforward torque
+   16. calculateCruiseControlProportionalTorque  — Proportional control
+   17. calculateCruiseControlFinalTorque         — Final torque merge
+   18-27. [unnamed functions]                    — State management, CAN, etc.
+
+4.2) CONTROL ARCHITECTURE
+  Torque-based cruise control with:
+  - Feedforward torque: calculateCruiseControlFFTorque (0x2DCDC)
+    → Calculates torque needed based on road grade, drag, etc.
+  - Proportional torque: calculateCruiseControlProportionalTorque (0x2DE64)
+    → P-control on speed error (target - actual)
+  - Final torque: calculateCruiseControlFinalTorque (0x2E50C)
+    → Merges FF + P torque, applies limits
+
+4.3) SAFETY MONITORING
+  - cruiseControlOvershootPlausibilityMon (0x2DB00): Detects speed overshoot
+  - cruiseControlUndershootingPlausibilityMon (0x2D9BC): Detects undershoot
+  - calculateCruiseControlDisableCondition (0x2D924): Disable conditions
+    → Brake press, clutch (MT), gear change, speed limits, VSC intervention
+
+4.4) DRIVER INTERFACE
+  - calculateCruiseControlSwitchVolt (0x2C5D0): Read switch voltage
+  - calculateCruiseControlDriverRequest (0x2C5F8): Parse driver input
+  - debounceCruiseControlSET / ACCELRES: Button debouncing (0x327CE, 0x32820)
+  - enableDisableCruiseControl (0xC116): Master enable/disable
+
+4.5) OBD/DIAGNOSTICS
+  - getCruiseControlE2Metrics (0x2EBEE): EEPROM-stored cruise metrics
+
+
+================================================================================
+5. SECONDARY AIR PUMP — COLD START EMISSION CONTROL
+================================================================================
+
+5.1) PURPOSE
+  Secondary air injection injects ambient air into the exhaust manifold
+  during cold start to promote catalytic converter light-off. The extra
+  oxygen helps burn unburned hydrocarbons (HC) and carbon monoxide (CO)
+  before they reach the catalyst.
+
+5.2) ENRICHMENT COMPENSATION — calculateSecondaryAirPumpEnirchment (0x31ACC)
+  Algorithm:
+    - 3-mode operation based on BOOL flag:
+      Mode 0: correction = (air_volume + 1.0) × (enrichment_adder + 1.0) - 1.0
+        → Full enrichment compensation proportional to air volume injected
+      Mode 1: If specific condition met → same as mode 0, else → enrichment_adder only
+      Mode 2: If no conditions met → correction = 0 (no compensation)
+    - Additional 2D lookup for limiting: min(correction, lookup_result)
+    - Output: fuel enrichment multiplier to compensate for secondary air
+
+5.3) AIR PUMP CONTROL
+  turnOnSecondaryAir (0x31BA0): Activate air pump relay
+  calculateSecondaryAirOnTime (0x31BF2): Calculate pump run duration
+  getSecondaryAirOnTimer (0x31DF2): Read remaining timer
+  getSecondaryAirPumpRequest (0x193B4): Check if pump activation needed
+
+5.4) DIAGNOSTICS
+  diagCheckSecondaryAirRequest (0x5B76C): OBD diagnostic check
+  getSecondaryAirPumpRequestForMode22 (0x536E2): Mode22 PID for datalogging
+
+5.5) TUNING RELEVANCE
+  Secondary air affects cold-start AFR readings. If removed (aftermarket
+  decat), the ECU will still attempt to activate the pump and compensate
+  fuel. Disabling may require specific DTC suppression.
+
+
+================================================================================
+6. EVAP PURGE CONTROL
+================================================================================
+
+6.1) MAIN HANDLER — evapRelated (0x224F6)
+  - 7 sequential sub-function calls in critical section (getSR/setSR)
+  - Most sub-functions unnamed in Ghidra → tuner did not fully analyze
+
+6.2) KNOWN FUNCTIONS
+  evapRelated (0x39270): Second EVAP handler (possibly separate phase)
+  filterEvapSomething (0x4D0D0): Signal filtering for EVAP sensor
+  getEvapPurgeMode22 (0x537E8): OBD Mode22 PID for purge valve status
+
+6.3) PURPOSE
+  EVAP (Evaporative Emission Control) captures fuel vapor from the tank
+  and purges it into the intake manifold for combustion. The ECU controls
+  the purge valve duty cycle based on engine load, speed, and fuel trim.
+
+
+================================================================================
+7. STARTUP ENRICHMENT
+================================================================================
+
+7.1) FUNCTIONS
+  getEngineStartupEnrichValue (0x348CC):
+    - Conditional on startup flag (DAT_00034916 == 1)
+    - 2D lookup by engine parameter → enrichment value
+    - Output: startup enrichment multiplier
+
+  derateEngineStartupEnrich (0x348EE): Decay startup enrichment over time
+  fuelingStartupMultiplierStuff (0x34964): Apply multiplier to fuel request
+  setStartupInjectorPwMult (0x3089A): Set injector pulse width multiplier
+  resetStartupEnrich (0x349D8): Clear enrichment after engine is warm
+
+7.2) TUNING RELEVANCE
+  Startup enrichment is critical for cold-start reliability on Wankel engines.
+  The rotary's large surface area and apex seal gaps cause poor cold sealing,
+  requiring significantly more fuel during cranking than piston engines.
+
+
+================================================================================
+8. STAGED INJECTION — PRIMARY + SECONDARY INJECTORS
+================================================================================
+
+8.1) ARCHITECTURE
+  The RX-8 uses staged fuel injection with primary and secondary injectors.
+  At low fuel demands, only primary injectors are used. As demand increases,
+  secondary injectors are phased in.
+
+8.2) INJECTOR ON-TIME CALCULATION — calcInjectorOnTime (0x313F0)
+  Three operating modes based on fuel request vs injector capacity:
+
+  Mode A — Request < Primary Max:
+    primary_time = (request - secondary_min) × primary_scaling × period
+    secondary_time = secondary_min × secondary_scaling × period
+
+  Mode B — Request > Primary Max but < Total:
+    primary_time = (request - secondary_cc_max) × scaling × period
+    secondary_time = secondary_cc_max × scaling × period
+
+  Mode C — Request > Total Capacity (latency compensated):
+    primary_time = primary_latency_compensated
+    secondary_time = secondary_latency_compensated
+    (Pre-calculated values when both injectors are at capacity)
+
+  All times divided by injector flow rate calibration (cc/min → time).
+  First-order filter applied to injection time for smooth transitions.
+
+8.3) KEY CALIBRATION PARAMETERS
+  - primary_injector_size_cal: Primary injector flow rate
+  - secondary_injector_size_cal: Secondary injector flow rate
+  - primary_injector_min_cc_per_rot: Minimum primary fuel per rotation
+  - secondary_injector_cc_per_rev_max: Maximum secondary fuel per rotation
+  - primary/secondary_injector_cc_per_rot_latency_compensated: Dead-time corrected
+
+8.4) RELATED FUNCTIONS
+  getInjectorOnTimeCompensations (0x304CC): Latency/dead-time calculation
+  getInjectorTempBasedMultiplierLookups (0x301F6): Temp-based correction
+  injectorPulseTimeArbitrate_crankAddTimer (0x30344): Cranking pulse arbitration
+  calcInjectorCrankingTime (0x306B4): Cold cranking pulse width
+  getCrankingInjectorPulseTime (0x30700): Read cranking pulse
+  setFuelInjectorLatency (0x86F8): Set dead-time compensation
+  calcDiagFuelInjectorTrim (0x4AE38): Diagnostic injector trim
+
+8.5) TUNING RELEVANCE
+  Critical for injector upgrades. When installing larger injectors, the
+  primary_injector_size_cal and secondary_injector_size_cal values must
+  be changed to match the new flow rates, or the ECU will over/under-fuel.
+
+
+================================================================================
+END OF NEW SUBSYSTEMS DOCUMENTATION
+================================================================================

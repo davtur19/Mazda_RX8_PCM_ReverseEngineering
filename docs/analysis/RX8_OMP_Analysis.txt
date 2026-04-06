@@ -30,8 +30,8 @@ CONSEQUENCES:
     fouling), carbon deposit formation, possible emission control failures.
 
 DESIGN: Unlike 4-stroke engines where cylinder walls retain oil film, rotary
-  combustion chambers are large open spaces. Oil must be injected fresh each
-  combustion event to maintain seal protection.
+  housing walls retain a thin oil film. Oil must be injected fresh each
+  combustion event to maintain apex seal protection.
 
 
 ================================================================================
